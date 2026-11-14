@@ -1,9 +1,11 @@
-package models;
+package com.zetheta.demo.models;
 
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "ledger_entries")
@@ -26,10 +28,12 @@ public class LedgerEntry {
     @Column(nullable = false, precision = 19, scale = 4, updatable = false)
     private BigDecimal amount;
 
-    @Column(name = "hash", nullable = false,length = 64,updatable = false)
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "hash", nullable = false, length = 64, updatable = false, columnDefinition = "CHAR(64)")
     private String hash;
 
-    @Column(name = "previous_hash", length = 64, updatable = false)
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "previous_hash", length = 64, updatable = false, columnDefinition = "CHAR(64)")
     private String previousHash;
 
     @Column(nullable = false, length = 20)

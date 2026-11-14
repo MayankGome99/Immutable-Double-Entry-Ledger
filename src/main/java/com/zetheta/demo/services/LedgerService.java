@@ -1,10 +1,10 @@
-package services;
+package com.zetheta.demo.services;
 
-import models.LedgerEntry;
+import com.zetheta.demo.models.LedgerEntry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import repositories.LedgerEntryRepository;
-import utils.HashUtils;
+import com.zetheta.demo.repositories.LedgerEntryRepository;
+import com.zetheta.demo.utils.HashUtils;
 
 import java.math.BigDecimal;
 import java.util.List;

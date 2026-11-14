@@ -1,7 +1,7 @@
-package repositories;
+package com.zetheta.demo.repositories;
 
 
-import models.LedgerEntry;
+import com.zetheta.demo.models.LedgerEntry;
 import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.UUID;
 
