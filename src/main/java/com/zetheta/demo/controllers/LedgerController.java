@@ -44,13 +44,13 @@ public class LedgerController {
 
     @PutMapping("/transactions")
     public ResponseEntity<String> createTransaction(@RequestBody List<LedgerEntry> entries) {
-        try{
+        for (LedgerEntry entry : entries) {
+            entry.setEntryId(null);
+        }
             ledgerService.postTransaction(entries);
             return ResponseEntity.ok("Transaction posted and locked with SHA-256 successfully!");
 
-        }catch (IllegalArgumentException e){
-            return ResponseEntity.badRequest().body(e.getMessage());
+
         }
     }
 
-}

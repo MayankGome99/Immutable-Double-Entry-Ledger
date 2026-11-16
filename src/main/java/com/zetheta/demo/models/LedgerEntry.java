@@ -1,8 +1,8 @@
 package com.zetheta.demo.models;
 
 import jakarta.persistence.*;
-
 import java.math.BigDecimal;
+import java.time.ZonedDateTime;
 import java.util.UUID;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -12,6 +12,7 @@ import org.hibernate.type.SqlTypes;
 public class LedgerEntry {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
     @Column(name = "entry_id")
     private UUID entryId;
 
@@ -36,10 +37,26 @@ public class LedgerEntry {
     @Column(name = "previous_hash", length = 64, updatable = false, columnDefinition = "CHAR(64)")
     private String previousHash;
 
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(nullable = false, length = 3, updatable = false, columnDefinition = "CHAR(3)")
+    private String currency;
+
+    @Column(name = "effective_date", nullable = false)
+    private ZonedDateTime effectiveDate;
+
+    @Column(name = "created_by", nullable = false)
+    private String createdBy;
+
+    @Column(name = "idempotency_key", nullable = false, unique = true, length = 64)
+    private String idempotencyKey;
+
     @Column(nullable = false, length = 20)
     private String status;
 
-    // Getters
+    // Default constructor required by JPA
+    public LedgerEntry() {}
+
+    // ==================== GETTERS ====================
     public UUID getEntryId() { return entryId; }
     public UUID getJournalId() { return journalId; }
     public Account getAccount() { return account; }
@@ -47,9 +64,13 @@ public class LedgerEntry {
     public BigDecimal getAmount() { return amount; }
     public String getHash() { return hash; }
     public String getPreviousHash() { return previousHash; }
+    public String getCurrency() { return currency; }
+    public ZonedDateTime getEffectiveDate() { return effectiveDate; }
+    public String getCreatedBy() { return createdBy; }
+    public String getIdempotencyKey() { return idempotencyKey; }
     public String getStatus() { return status; }
 
-    // Setters
+    // ==================== SETTERS ====================
     public void setEntryId(UUID entryId) { this.entryId = entryId; }
     public void setJournalId(UUID journalId) { this.journalId = journalId; }
     public void setAccount(Account account) { this.account = account; }
@@ -57,8 +78,10 @@ public class LedgerEntry {
     public void setAmount(BigDecimal amount) { this.amount = amount; }
     public void setHash(String hash) { this.hash = hash; }
     public void setPreviousHash(String previousHash) { this.previousHash = previousHash; }
+    public void setCurrency(String currency) { this.currency = currency; }
+    public void setEffectiveDate(ZonedDateTime effectiveDate) { this.effectiveDate = effectiveDate; }
+    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
+    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
     public void setStatus(String status) { this.status = status; }
-
-    public LedgerEntry() {}
 
 }
