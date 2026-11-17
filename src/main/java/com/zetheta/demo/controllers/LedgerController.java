@@ -52,5 +52,12 @@ public class LedgerController {
 
 
         }
+
+        //4. GET Request: View the Trial Balance
+        @GetMapping("/trial-balance")
+         public List<Object[]> getTrialBalance() {
+        return entryRepository.generateTrialBalance();
+        }
+
     }
 
