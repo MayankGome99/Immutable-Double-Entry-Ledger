@@ -59,5 +59,25 @@ public class LedgerController {
         return entryRepository.generateTrialBalance();
         }
 
+       // 5. GET Request: Run the Security Audit
+
+    @GetMapping("/audit")
+    public ResponseEntity<String> runSecurityAudit(){
+        String auditResult = ledgerService.verifyAuditTrail();
+        return ResponseEntity.ok(auditResult);
+
+
+    }
+
+    //   6. GET Request: View Customer Passbook
+
+    @GetMapping("/accounts/{accountId}/statement")
+    public ResponseEntity<List<LedgerEntry>> getAccountStatement(@PathVariable java.util.UUID accountId){
+        List<LedgerEntry> statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);
+        if(statement.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(statement);
+    }
     }
 

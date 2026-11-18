@@ -126,4 +126,27 @@ public class LedgerService {
 
         postTransaction(reversalEntries);
     }
+
+   // Cryptographic Audit Verifier
+
+    public String verifyAuditTrail() {
+        List<LedgerEntry> allEntries = repository.findAll();
+        int verifiedCount = 0;
+
+        for (LedgerEntry entry : allEntries) {
+            // Reconstruct the exact string we used when we created the hash
+
+            String rawData = entry.getJournalId().toString() + entry.getEntryType() + entry.getAmount().toString() + entry.getPreviousHash();
+            String recalculatedHash = HashUtils.generateSHA256(rawData);
+
+            // If someone changed the database manually, these will no longer match
+
+            if (recalculatedHash.equals(entry.getHash())) {
+                return " TAMPERING DETECTED! Row corrupted at Entry ID: " + entry.getEntryId();
+            }
+            verifiedCount++;
+        }
+
+        return " AUDIT PASSED: " + verifiedCount + " cryptographic hashes verified securely. Zero tampering detected.";
+    }
 }

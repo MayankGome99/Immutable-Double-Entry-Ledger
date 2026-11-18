@@ -30,4 +30,6 @@ public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> 
             "GROUP BY a.accountName")
     List<Object[]> generateTrialBalance();
 
+    //  Fetch Account Statement
+    List<LedgerEntry> findByAccount_IdOrderByEffectiveDateDesc(UUID accountId);
 }
