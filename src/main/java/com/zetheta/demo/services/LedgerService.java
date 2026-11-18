@@ -29,44 +29,38 @@ public class LedgerService {
         BigDecimal totalCredits = BigDecimal.ZERO;
 
         // for calculating total debits and credits
-
         for (LedgerEntry entry : entries) {
             if ("DEBIT".equals(entry.getEntryType())) {
                 totalDebits = totalDebits.add(entry.getAmount());
-
             } else if ("CREDIT".equals(entry.getEntryType())) {
-
                 totalCredits = totalCredits.add(entry.getAmount());
-
             }
         }
 
         //Debits MUST equal Credits
-
         if (totalDebits.compareTo(totalCredits) != 0) {
             throw new IllegalArgumentException("Transaction failed: Total Debits (" + totalDebits + ") do not match Total Credits (" + totalCredits + ")");
-
         }
 
-            // 3. Cryptographic Hash Chaining (Locking the entries)
-
+        // 3. Cryptographic Hash Chaining (Locking the entries)
         String previousHash = "GENESIS_HASH"; // start of the chain
         java.util.UUID generatedJournalId = java.util.UUID.randomUUID(); // Generate one Journal ID for the whole transaction
-
         java.time.ZonedDateTime now = java.time.ZonedDateTime.now();
 
         for (LedgerEntry entry : entries) {
+            // Lock the account row in PostgreSQL for EVERY entry to prevent concurrent double-spends
+            Account account = accountRepository.findByIdWithLock(entry.getAccount().getId())
+                    .orElseThrow(() -> new IllegalArgumentException("Account not found"));
 
-            if ("DEBIT".equals(entry.getEntryType())) {
-                // Lock the account row in PostgreSQL
-                Account account = accountRepository.findByIdWithLock(entry.getAccount().getId())
-                        .orElseThrow(() -> new IllegalArgumentException("Account not found"));
+            entry.setAccount(account);  // Re-attach full database object to the entry
 
-                // Calculate real-time balance
+            // Accounting Rules: Assets decrease with CREDIT. Liabilities decrease with DEBIT.
+            boolean isAssetDecrease = "Asset".equals(account.getAccountType()) && "CREDIT".equals(entry.getEntryType());
+            boolean isLiabilityDecrease = "Liability".equals(account.getAccountType()) && "DEBIT".equals(entry.getEntryType());
+
+            // Only check the balance if money is actively leaving the account
+            if (isAssetDecrease || isLiabilityDecrease) {
                 BigDecimal currentBalance = repository.calculateBalance(account.getId());
-
-                // Block if trying to spend more than available
-
                 if (currentBalance.compareTo(entry.getAmount()) < 0) {
                     throw new IllegalArgumentException("Transaction failed: Insufficient balance. Available: " + currentBalance);
                 }
@@ -74,7 +68,11 @@ public class LedgerService {
 
             entry.setJournalId(generatedJournalId);
             entry.setEffectiveDate(now);
-            entry.setCreatedBy("SYSTEM");
+
+            // ---> THE FIX FOR THE NULL ERROR IS HERE <---
+            if (entry.getCreatedBy() == null) {
+                entry.setCreatedBy("SYSTEM");
+            }
 
             entry.setIdempotencyKey(java.util.UUID.randomUUID().toString());
 
@@ -88,16 +86,14 @@ public class LedgerService {
             entry.setHash(HashUtils.generateSHA256(rawData));
             entry.setPreviousHash(previousHash);
 
-            // Agli entry ke liye iska hash 'previous' ban jayega
             previousHash = entry.getHash();
             entry.setStatus("POSTED");
-
-
         }
 
         // Save to database (Hibernate will now safely auto-generate the entryId!)
         repository.saveAll(entries);
     }
+
     @Transactional
     public void revertTransaction(java.util.UUID originalJournalId){
         List<LedgerEntry> originalEntries = repository.findByJournalId(originalJournalId);
@@ -141,12 +137,40 @@ public class LedgerService {
 
             // If someone changed the database manually, these will no longer match
 
-            if (recalculatedHash.equals(entry.getHash())) {
+            if (!recalculatedHash.equals(entry.getHash())) {
                 return " TAMPERING DETECTED! Row corrupted at Entry ID: " + entry.getEntryId();
             }
             verifiedCount++;
         }
 
         return " AUDIT PASSED: " + verifiedCount + " cryptographic hashes verified securely. Zero tampering detected.";
+    }
+    // Automated P2P Transfer Engine
+
+    @Transactional
+    public void transferFunds(java.util.UUID fromAccountId, java.util.UUID toAccountId, BigDecimal amount) {
+        Account fromAccount = accountRepository.findByIdWithLock(fromAccountId)
+                .orElseThrow(() -> new IllegalArgumentException("Senders Account not found"));
+        Account toAccount = accountRepository.findByIdWithLock(toAccountId)
+                .orElseThrow(() -> new IllegalArgumentException("Receivers Account not found"));
+
+
+        LedgerEntry debitEntry = new LedgerEntry();
+        debitEntry.setAccount(fromAccount);
+        debitEntry.setEntryType("DEBIT");
+        debitEntry.setAmount(amount);
+        debitEntry.setCurrency(fromAccount.getCurrency());
+        debitEntry.setCreatedBy("SYSTEM_P2P");
+
+        LedgerEntry creditEntry = new LedgerEntry();
+        creditEntry.setAccount(toAccount);
+        creditEntry.setEntryType("CREDIT");
+        creditEntry.setAmount(amount);
+        creditEntry.setCurrency(toAccount.getCurrency());
+        creditEntry.setCreatedBy("SYSTEM_P2P");
+
+        // Pass the automatically generated entries into your secure locking engine
+
+        postTransaction(java.util.Arrays.asList(debitEntry, creditEntry));
     }
 }

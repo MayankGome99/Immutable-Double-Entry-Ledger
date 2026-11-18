@@ -1,5 +1,6 @@
 package com.zetheta.demo.controllers;
 
+import com.zetheta.demo.Data_Transfer_Object.TransferRequest;
 import com.zetheta.demo.models.Account;
 import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
@@ -79,5 +80,14 @@ public class LedgerController {
         }
         return ResponseEntity.ok(statement);
     }
-    }
+
+    //7. POST Request: Send P2P Transfer
+
+        @PostMapping("/transfer")
+    public org.springframework.http.ResponseEntity<String> transfer(@RequestBody com.zetheta.demo.Data_Transfer_Object.TransferRequest transferRequest){
+        ledgerService.transferFunds(transferRequest.fromAccountId(), transferRequest.toAccountId(), transferRequest.amount());
+        return org.springframework.http.ResponseEntity.ok("Transfer of " + transferRequest.amount() + " completed successfully!");
+
+        }
+}
 
