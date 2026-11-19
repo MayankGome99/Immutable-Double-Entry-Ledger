@@ -1,9 +1,9 @@
 # ZeTheta Immutable Double-Entry Ledger
 
-A production-style financial ledger backend built with **Java 26**, **Spring Boot 4.1.2**, **PostgreSQL 15**, **Flyway**, and **Docker**. Designed for strict double-entry accounting, cryptographic tamper detection, concurrency safety, and partitioned scalability.
+A production-style financial ledger backend built with **Java 21**, **Spring Boot 4.1.2**, **PostgreSQL 15**, **Flyway**, and **Docker**. Designed for strict double-entry accounting, cryptographic tamper detection, concurrency safety, and partitioned scalability.
 
 ## Tech Stack
-- **Backend:** Java 26, Spring Boot 4.1.2, Spring Data JPA (Hibernate)
+- **Backend:** Java 21, Spring Boot 4.1.2, Spring Data JPA (Hibernate)
 - **Database & Migrations:** PostgreSQL 15 (Dockerized), Flyway (`V1`–`V6`)
 - **API Documentation:** OpenAPI 3 / Swagger UI (`springdoc-openapi`)
 
