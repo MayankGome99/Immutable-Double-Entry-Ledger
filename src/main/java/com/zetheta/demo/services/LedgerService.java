@@ -69,7 +69,7 @@ public class LedgerService {
             entry.setJournalId(generatedJournalId);
             entry.setEffectiveDate(now);
 
-            // ---> THE FIX FOR THE NULL ERROR IS HERE <---
+
             if (entry.getCreatedBy() == null) {
                 entry.setCreatedBy("SYSTEM");
             }
@@ -81,7 +81,8 @@ public class LedgerService {
             }
 
             // Hash the actual transaction data, NOT the database ID!
-            String rawData = entry.getJournalId().toString() + entry.getEntryType() + entry.getAmount().toString() + previousHash;
+            String cleanAmount = entry.getAmount().stripTrailingZeros().toPlainString();
+            String rawData = entry.getJournalId().toString() + entry.getEntryType() + cleanAmount + previousHash.trim();
 
             entry.setHash(HashUtils.generateSHA256(rawData));
             entry.setPreviousHash(previousHash);
@@ -131,8 +132,8 @@ public class LedgerService {
 
         for (LedgerEntry entry : allEntries) {
             // Reconstruct the exact string we used when we created the hash
-
-            String rawData = entry.getJournalId().toString() + entry.getEntryType() + entry.getAmount().toString() + entry.getPreviousHash();
+            String cleanAmount = entry.getAmount().stripTrailingZeros().toPlainString();
+            String rawData = entry.getJournalId().toString() + entry.getEntryType() + cleanAmount + entry.getPreviousHash().trim();
             String recalculatedHash = HashUtils.generateSHA256(rawData);
 
             // If someone changed the database manually, these will no longer match

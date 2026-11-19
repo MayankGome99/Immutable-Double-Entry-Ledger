@@ -89,5 +89,51 @@ public class LedgerController {
         return org.springframework.http.ResponseEntity.ok("Transfer of " + transferRequest.amount() + " completed successfully!");
 
         }
+
+    // 8. POST Request: Day 15 - 1,000 Transaction Stress Test
+
+
+    @PostMapping("/stress-test")
+    public ResponseEntity<String> runStressTest() {
+        long startTime = System.currentTimeMillis();
+
+        // Dono seeded accounts ko database se nikaal rahe hain
+
+        Account wallet = accountRepository.findAll().stream()
+                .filter(a -> "1001".equals(a.getAccountCode()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Wallet 1001 not found"));
+
+        Account depositLiability = accountRepository.findAll().stream()
+                .filter(a -> "2001".equals(a.getAccountCode()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Liability 2001 not found"));
+
+        // 1,000 balanced transactions lagataar fire karo
+
+        for (int i = 0; i < 1000; i++) {
+            LedgerEntry debit = new LedgerEntry();
+            debit.setAccount(wallet);
+            debit.setEntryType("DEBIT");
+            debit.setAmount(new java.math.BigDecimal("10.00"));
+            debit.setCurrency("INR");
+            debit.setCreatedBy("STRESS_TEST");
+
+            LedgerEntry credit = new LedgerEntry();
+            credit.setAccount(depositLiability);
+            credit.setEntryType("CREDIT");
+            credit.setAmount(new java.math.BigDecimal("10.00"));
+            credit.setCurrency("INR");
+            credit.setCreatedBy("STRESS_TEST");
+
+            ledgerService.postTransaction(java.util.Arrays.asList(debit, credit));
+        }
+
+        long duration = System.currentTimeMillis() - startTime;
+        String auditStatus = ledgerService.verifyAuditTrail();
+
+        return ResponseEntity.ok("STRESS TEST PASSED! 1,000 transactions (2,000 ledger entries) posted in "
+                + duration + " ms. | " + auditStatus);
+    }
 }
 
