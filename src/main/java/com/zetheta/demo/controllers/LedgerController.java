@@ -6,14 +6,17 @@ import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
 import com.zetheta.demo.repositories.LedgerEntryRepository;
 import com.zetheta.demo.services.LedgerService;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
+import java.math.BigDecimal;
+import java.time.ZonedDateTime;
+import java.util.*;
 
 @RestController
 @RequestMapping("/api/ledger")
-
 public class LedgerController {
 
     private final LedgerService ledgerService;
@@ -28,76 +31,120 @@ public class LedgerController {
         this.entryRepository = entryRepository;
     }
 
-    //1 GET Request: View all  seeded accounts in the browser
+    @GetMapping("/health")
+    public ResponseEntity<Object> healthCheck() {
+        Map<String, Object> health = new LinkedHashMap<>();
+        health.put("status", "UP");
+        health.put("database", "CONNECTED");
+        health.put("accountsCount", accountRepository.count());
+        health.put("ledgerEntriesCount", entryRepository.count());
+        health.put("auditStatus", ledgerService.verifyAuditTrail());
+        health.put("timestamp", ZonedDateTime.now().toString());
+        return ResponseEntity.ok(health);
+    }
+
     @GetMapping("/accounts")
     public List<Account> getAllAccounts() {
         return accountRepository.findAll();
     }
-
-    // 2 GET Request: View all posted ledger entries
 
     @GetMapping("/entries")
     public List<LedgerEntry> getAllEntries() {
         return entryRepository.findAll();
     }
 
-    // 3. POST Request: Send a new transaction (Debit + Credit) to the browser or database kinda like brain
-
-    @PutMapping("/transactions")
-    public ResponseEntity<String> createTransaction(@RequestBody List<LedgerEntry> entries) {
-        for (LedgerEntry entry : entries) {
-            entry.setEntryId(null);
+    @PostMapping("/transactions")
+    public ResponseEntity<Object> createTransaction(
+            @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody List<LedgerEntry> entries) {
+        for (int i = 0; i < entries.size(); i++) {
+            entries.get(i).setEntryId(null);
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                entries.get(i).setIdempotencyKey(idempotencyKey + "-" + i);
+            }
         }
-            ledgerService.postTransaction(entries);
-            return ResponseEntity.ok("Transaction posted and locked with SHA-256 successfully!");
-
-
-        }
-
-        //4. GET Request: View the Trial Balance
-        @GetMapping("/trial-balance")
-         public List<Object[]> getTrialBalance() {
-        return entryRepository.generateTrialBalance();
-        }
-
-       // 5. GET Request: Run the Security Audit
-
-    @GetMapping("/audit")
-    public ResponseEntity<String> runSecurityAudit(){
-        String auditResult = ledgerService.verifyAuditTrail();
-        return ResponseEntity.ok(auditResult);
-
-
+        UUID journalId = ledgerService.postTransaction(entries);
+        return ResponseEntity.ok(Map.of(
+                "message", "Transaction posted and locked with SHA-256 successfully!",
+                "journalId", journalId.toString()
+        ));
     }
 
-    //   6. GET Request: View Customer Passbook
+    @PostMapping("/reversals/{journalId}")
+    public ResponseEntity<Object> reverseTransaction(@PathVariable UUID journalId) {
+        UUID reversalJournalId = ledgerService.revertTransaction(journalId);
+        return ResponseEntity.ok(Map.of(
+                "message", "Reversal posted successfully following no-mutation principle.",
+                "originalJournalId", journalId.toString(),
+                "reversalJournalId", reversalJournalId.toString()
+        ));
+    }
+
+    @GetMapping("/trial-balance")
+    public List<Object[]> getTrialBalance() {
+        return entryRepository.generateTrialBalance();
+    }
+
+    @GetMapping("/reports/income-statement")
+    public ResponseEntity<Object> getIncomeStatement() {
+        return ResponseEntity.ok(ledgerService.getIncomeStatement());
+    }
+
+    @GetMapping("/reports/balance-sheet")
+    public ResponseEntity<Object> getBalanceSheet() {
+        return ResponseEntity.ok(ledgerService.getBalanceSheet());
+    }
+
+    @GetMapping("/audit")
+    public ResponseEntity<String> runSecurityAudit() {
+        return ResponseEntity.ok(ledgerService.verifyAuditTrail());
+    }
 
     @GetMapping("/accounts/{accountId}/statement")
-    public ResponseEntity<List<LedgerEntry>> getAccountStatement(@PathVariable java.util.UUID accountId){
+    public ResponseEntity<Object> getAccountStatement(@PathVariable UUID accountId) {
         List<LedgerEntry> statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);
-        if(statement.isEmpty()) {
+        if (statement.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(statement);
     }
 
-    //7. POST Request: Send P2P Transfer
-
-        @PostMapping("/transfer")
-    public org.springframework.http.ResponseEntity<String> transfer(@RequestBody com.zetheta.demo.Data_Transfer_Object.TransferRequest transferRequest){
-        ledgerService.transferFunds(transferRequest.fromAccountId(), transferRequest.toAccountId(), transferRequest.amount());
-        return org.springframework.http.ResponseEntity.ok("Transfer of " + transferRequest.amount() + " completed successfully!");
-
+    @GetMapping(value = "/accounts/{accountId}/statement/csv", produces = "text/csv")
+    public ResponseEntity<String> exportAccountStatementCsv(@PathVariable UUID accountId) {
+        List<LedgerEntry> statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);
+        StringBuilder csv = new StringBuilder("entry_id,journal_id,entry_type,amount,currency,status,effective_date,created_by\n");
+        for (LedgerEntry e : statement) {
+            csv.append(e.getEntryId()).append(",")
+                    .append(e.getJournalId()).append(",")
+                    .append(e.getEntryType()).append(",")
+                    .append(e.getAmount()).append(",")
+                    .append(e.getCurrency().trim()).append(",")
+                    .append(e.getStatus()).append(",")
+                    .append(e.getEffectiveDate()).append(",")
+                    .append(e.getCreatedBy()).append("\n");
         }
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=statement_" + accountId + ".csv")
+                .contentType(MediaType.parseMediaType("text/csv"))
+                .body(csv.toString());
+    }
 
-    // 8. POST Request: Day 15 - 1,000 Transaction Stress Test
-
+    @PostMapping("/transfer")
+    public ResponseEntity<Object> transfer(@RequestBody TransferRequest transferRequest) {
+        UUID journalId = ledgerService.transferFunds(
+                transferRequest.fromAccountId(),
+                transferRequest.toAccountId(),
+                transferRequest.amount()
+        );
+        return ResponseEntity.ok(Map.of(
+                "message", "Transfer of " + transferRequest.amount() + " completed successfully!",
+                "journalId", journalId.toString()
+        ));
+    }
 
     @PostMapping("/stress-test")
     public ResponseEntity<String> runStressTest() {
         long startTime = System.currentTimeMillis();
-
-        // Dono seeded accounts ko database se nikaal rahe hain
 
         Account wallet = accountRepository.findAll().stream()
                 .filter(a -> "1001".equals(a.getAccountCode()))
@@ -109,24 +156,22 @@ public class LedgerController {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Liability 2001 not found"));
 
-        // 1,000 balanced transactions lagataar fire karo
-
         for (int i = 0; i < 1000; i++) {
             LedgerEntry debit = new LedgerEntry();
             debit.setAccount(wallet);
             debit.setEntryType("DEBIT");
-            debit.setAmount(new java.math.BigDecimal("10.00"));
+            debit.setAmount(new BigDecimal("10.00"));
             debit.setCurrency("INR");
             debit.setCreatedBy("STRESS_TEST");
 
             LedgerEntry credit = new LedgerEntry();
             credit.setAccount(depositLiability);
             credit.setEntryType("CREDIT");
-            credit.setAmount(new java.math.BigDecimal("10.00"));
+            credit.setAmount(new BigDecimal("10.00"));
             credit.setCurrency("INR");
             credit.setCreatedBy("STRESS_TEST");
 
-            ledgerService.postTransaction(java.util.Arrays.asList(debit, credit));
+            ledgerService.postTransaction(Arrays.asList(debit, credit));
         }
 
         long duration = System.currentTimeMillis() - startTime;
@@ -136,4 +181,3 @@ public class LedgerController {
                 + duration + " ms. | " + auditStatus);
     }
 }
-
