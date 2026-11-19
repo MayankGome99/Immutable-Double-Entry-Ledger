@@ -1,4 +1,4 @@
-# ZeTheta Immutable Double-Entry Ledger
+#  Immutable Double-Entry Ledger
 
 A production-style financial ledger backend built with **Java 21**, **Spring Boot 4.1.2**, **PostgreSQL 15**, **Flyway**, and **Docker**. Designed for strict double-entry accounting, cryptographic tamper detection, concurrency safety, and partitioned scalability.
 
