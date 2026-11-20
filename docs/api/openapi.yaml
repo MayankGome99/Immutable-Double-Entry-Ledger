@@ -1,0 +1,88 @@
+﻿openapi: 3.0.3
+info:
+  title: NovaPay Immutable Double-Entry Financial Ledger API
+  version: 1.0.0
+  description: Double-entry accounting ledger with SHA-256 hash chaining, 20 transaction types, multi-currency FX snapshots, partial refunds, and financial reporting.
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/ledger/health:
+    get:
+      summary: System health, DB connectivity & hash-chain audit status
+      responses:
+        '200': { description: Healthy }
+  /api/ledger/accounts:
+    get:
+      summary: List all Chart of Accounts
+      responses:
+        '200': { description: List of accounts }
+  /api/ledger/transactions:
+    post:
+      summary: Post balanced journal entries (supports X-Idempotency-Key)
+      responses:
+        '200': { description: Posted }
+        '409': { description: Duplicate idempotency key }
+        '422': { description: Unbalanced entry or insufficient balance }
+  /api/ledger/transactions/typed:
+    post:
+      summary: Process any of the 20 supported neo-banking transaction types
+      responses:
+        '200': { description: Transaction posted }
+  /api/ledger/transfer:
+    post:
+      summary: Atomic P2P transfer with pessimistic locking
+      responses:
+        '200': { description: Transfer completed }
+  /api/ledger/reversals/{journalId}:
+    post:
+      summary: Full no-mutation mirror reversal
+      responses:
+        '200': { description: Reversed }
+  /api/ledger/refunds/partial:
+    post:
+      summary: Partial refund with PROPORTIONAL, FULL, or NONE fee policy
+      responses:
+        '200': { description: Partially refunded }
+        '409': { description: Duplicate refund idempotency key }
+        '422': { description: Refund exceeds original amount }
+  /api/ledger/fx/rates:
+    post:
+      summary: Capture immutable FX rate snapshot with validity window
+      responses:
+        '200': { description: Rate saved }
+  /api/ledger/fx/convert/usd-to-inr:
+    post:
+      summary: Convert USD to INR using valid rate snapshot with 0.5% FX markup
+      responses:
+        '200': { description: Converted }
+        '422': { description: Stale exchange rate rejected }
+  /api/ledger/trial-balance:
+    get:
+      summary: Real-time Trial Balance
+      responses:
+        '200': { description: Balanced Trial Balance }
+  /api/ledger/reports/income-statement:
+    get:
+      summary: Income Statement (P&L)
+      responses:
+        '200': { description: P&L report }
+  /api/ledger/reports/balance-sheet:
+    get:
+      summary: Balance Sheet (Assets = Liabilities + Equity)
+      responses:
+        '200': { description: Balance sheet }
+  /api/ledger/reports/currency-exposure:
+    get:
+      summary: Multi-Currency Exposure Report in INR equivalent
+      responses:
+        '200': { description: Currency exposure }
+  /api/ledger/accounts/{id}/statement/csv:
+    get:
+      summary: Export account statement as CSV
+      responses:
+        '200': { description: CSV statement }
+  /api/ledger/audit:
+    get:
+      summary: Verify complete SHA-256 cryptographic hash chain
+      responses:
+        '200': { description: Audit result }

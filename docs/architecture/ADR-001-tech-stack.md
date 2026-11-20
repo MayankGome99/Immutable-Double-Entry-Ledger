@@ -1,9 +1,17 @@
-# ADR-001: Technology Stack Selection
+﻿# ADR-001: Technology Stack Selection
+
+## Status
+Accepted
+
+## Context
+NovaPay requires an immutable double-entry financial ledger capable of strict ACID compliance, exact decimal arithmetic, native partitioning, and high-concurrency transaction processing.
 
 ## Decision
-We selected **Java 21, Spring Boot 3.x, and PostgreSQL 15** as the core technology stack for the Ledger System.
+- **Language & Framework:** Java 21 + Spring Boot 4.1.2 (strong static typing, mature Spring Data JPA & `@Transactional` boundaries, native `BigDecimal` support to eliminate IEEE 754 floating-point errors).
+- **Database:** PostgreSQL 15 (mandatory; provides `NUMERIC(19,4)`, PL/pgSQL immutability triggers, `SELECT ... FOR UPDATE` row locking, and native range partitioning).
+- **Migrations:** Flyway (versioned SQL scripts V1–V9 with rollback documentation).
+- **API Docs & Testing:** OpenAPI 3 / Swagger UI (`springdoc-openapi`) and JUnit 5 integration tests.
+- **Containerization:** Docker + Docker Compose.
 
-## Justification
-1. **Precision:** Java's `BigDecimal` prevents the floating-point rounding errors (like IEEE 754 issues) that caused material discrepancies in real-world fintech cases.
-2. **Concurrency & Atomicity:** Spring Boot's `@Transactional` annotation combined with PostgreSQL's ACID compliance ensures safe double-entry journal operations without partial commits.
-3. **Immutability:** PostgreSQL supports trigger-based restrictions to enforce the no-mutation principle (append-only ledger).
+## Consequences
+Strict compile-time type safety and database-enforced invariants reduce accounting bugs at the cost of slightly higher JVM memory footprint compared to Node.js.
