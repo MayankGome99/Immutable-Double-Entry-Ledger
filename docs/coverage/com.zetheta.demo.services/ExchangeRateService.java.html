@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExchangeRateService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.services</a> &gt; <span class="el_source">ExchangeRateService.java</span></div><h1>ExchangeRateService.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.services;
+
+import com.zetheta.demo.models.Account;
+import com.zetheta.demo.models.ExchangeRateSnapshot;
+import com.zetheta.demo.models.LedgerEntry;
+import com.zetheta.demo.repositories.AccountRepository;
+import com.zetheta.demo.repositories.ExchangeRateSnapshotRepository;
+import com.zetheta.demo.repositories.LedgerEntryRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.ZonedDateTime;
+import java.util.*;
+
+@Service
+public class ExchangeRateService {
+
+    private final ExchangeRateSnapshotRepository rateRepository;
+    private final AccountRepository accountRepository;
+    private final LedgerEntryRepository entryRepository;
+    private final LedgerService ledgerService;
+
+    public ExchangeRateService(ExchangeRateSnapshotRepository rateRepository,
+                               AccountRepository accountRepository,
+                               LedgerEntryRepository entryRepository,
+<span class="fc" id="L28">                               LedgerService ledgerService) {</span>
+<span class="fc" id="L29">        this.rateRepository = rateRepository;</span>
+<span class="fc" id="L30">        this.accountRepository = accountRepository;</span>
+<span class="fc" id="L31">        this.entryRepository = entryRepository;</span>
+<span class="fc" id="L32">        this.ledgerService = ledgerService;</span>
+<span class="fc" id="L33">    }</span>
+
+    public ExchangeRateSnapshot saveRateSnapshot(String base, String quote, BigDecimal rate,
+                                                 String source, int validMinutes) {
+<span class="pc bpc" id="L37" title="2 of 4 branches missed.">        if (rate == null || rate.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L38">            throw new IllegalArgumentException(&quot;Exchange rate must be strictly positive.&quot;);</span>
+        }
+<span class="fc" id="L40">        ZonedDateTime now = ZonedDateTime.now();</span>
+<span class="fc" id="L41">        ExchangeRateSnapshot snapshot = new ExchangeRateSnapshot();</span>
+<span class="fc" id="L42">        snapshot.setBaseCurrency(base.toUpperCase());</span>
+<span class="fc" id="L43">        snapshot.setQuoteCurrency(quote.toUpperCase());</span>
+<span class="fc" id="L44">        snapshot.setRate(rate);</span>
+<span class="fc" id="L45">        snapshot.setInverseRate(BigDecimal.ONE.divide(rate, 8, RoundingMode.HALF_UP));</span>
+<span class="pc bpc" id="L46" title="2 of 4 branches missed.">        snapshot.setSource(source == null || source.isBlank() ? &quot;INTERNAL&quot; : source);</span>
+<span class="fc" id="L47">        snapshot.setCapturedAt(now);</span>
+<span class="fc" id="L48">        snapshot.setValidFrom(now);</span>
+<span class="fc" id="L49">        snapshot.setValidUntil(now.plusMinutes(validMinutes));</span>
+<span class="fc" id="L50">        return rateRepository.save(snapshot);</span>
+    }
+
+    public ExchangeRateSnapshot getValidRate(String baseCurrency, String quoteCurrency) {
+<span class="fc" id="L54">        ExchangeRateSnapshot snapshot = rateRepository</span>
+<span class="fc" id="L55">                .findTopByBaseCurrencyAndQuoteCurrencyOrderByCapturedAtDesc(</span>
+<span class="fc" id="L56">                        baseCurrency.toUpperCase(), quoteCurrency.toUpperCase())</span>
+<span class="pc" id="L57">                .orElseThrow(() -&gt; new IllegalArgumentException(</span>
+                        &quot;No exchange rate snapshot found for &quot; + baseCurrency + &quot;/&quot; + quoteCurrency));
+
+<span class="fc" id="L60">        ZonedDateTime now = ZonedDateTime.now();</span>
+<span class="pc bpc" id="L61" title="1 of 4 branches missed.">        if (snapshot.getValidUntil() != null &amp;&amp; now.isAfter(snapshot.getValidUntil())) {</span>
+<span class="fc" id="L62">            throw new IllegalArgumentException(</span>
+                    &quot;Stale exchange rate rejected for &quot; + baseCurrency + &quot;/&quot; + quoteCurrency
+<span class="fc" id="L64">                            + &quot;. Expired at: &quot; + snapshot.getValidUntil());</span>
+        }
+<span class="fc" id="L66">        return snapshot;</span>
+    }
+
+    @Transactional
+    public Map&lt;String, Object&gt; convertUsdToInr(BigDecimal usdAmount, String createdBy) {
+<span class="pc bpc" id="L71" title="2 of 4 branches missed.">        if (usdAmount == null || usdAmount.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L72">            throw new IllegalArgumentException(&quot;Conversion amount must be greater than zero.&quot;);</span>
+        }
+
+<span class="fc" id="L75">        ExchangeRateSnapshot snapshot = getValidRate(&quot;USD&quot;, &quot;INR&quot;);</span>
+<span class="fc" id="L76">        BigDecimal grossInr = usdAmount.multiply(snapshot.getRate()).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L77">        BigDecimal fxMarkup = grossInr.multiply(new BigDecimal(&quot;0.005&quot;)).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L78">        BigDecimal netInr = grossInr.subtract(fxMarkup);</span>
+
+<span class="fc" id="L80">        Account usdWallet = findByCode(&quot;1002&quot;);</span>
+<span class="fc" id="L81">        Account fxHoldingUsd = findByCode(&quot;1005&quot;);</span>
+<span class="fc" id="L82">        Account fxHoldingInr = findByCode(&quot;1004&quot;);</span>
+<span class="fc" id="L83">        Account inrWallet = findByCode(&quot;1001&quot;);</span>
+<span class="fc" id="L84">        Account fxRevenue = findByCode(&quot;4003&quot;);</span>
+
+<span class="pc bpc" id="L86" title="2 of 4 branches missed.">        String actor = (createdBy == null || createdBy.isBlank()) ? &quot;FX_ENGINE&quot; : createdBy;</span>
+
+<span class="fc" id="L88">        UUID usdJournalId = ledgerService.postTransaction(Arrays.asList(</span>
+<span class="fc" id="L89">                buildEntry(usdWallet, &quot;CREDIT&quot;, usdAmount, &quot;USD&quot;, actor),</span>
+<span class="fc" id="L90">                buildEntry(fxHoldingUsd, &quot;DEBIT&quot;, usdAmount, &quot;USD&quot;, actor)</span>
+        ));
+
+<span class="fc" id="L93">        UUID inrJournalId = ledgerService.postTransaction(Arrays.asList(</span>
+<span class="fc" id="L94">                buildEntry(fxHoldingInr, &quot;DEBIT&quot;, grossInr, &quot;INR&quot;, actor),</span>
+<span class="fc" id="L95">                buildEntry(inrWallet, &quot;CREDIT&quot;, netInr, &quot;INR&quot;, actor),</span>
+<span class="fc" id="L96">                buildEntry(fxRevenue, &quot;CREDIT&quot;, fxMarkup, &quot;INR&quot;, actor)</span>
+        ));
+
+<span class="fc" id="L99">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L100">        result.put(&quot;snapshotId&quot;, snapshot.getSnapshotId().toString());</span>
+<span class="fc" id="L101">        result.put(&quot;rateApplied&quot;, snapshot.getRate());</span>
+<span class="fc" id="L102">        result.put(&quot;usdAmount&quot;, usdAmount);</span>
+<span class="fc" id="L103">        result.put(&quot;grossInr&quot;, grossInr);</span>
+<span class="fc" id="L104">        result.put(&quot;fxRevenueMarkupInr&quot;, fxMarkup);</span>
+<span class="fc" id="L105">        result.put(&quot;netInrCredited&quot;, netInr);</span>
+<span class="fc" id="L106">        result.put(&quot;usdJournalId&quot;, usdJournalId.toString());</span>
+<span class="fc" id="L107">        result.put(&quot;inrJournalId&quot;, inrJournalId.toString());</span>
+<span class="fc" id="L108">        return result;</span>
+    }
+
+    public Map&lt;String, Object&gt; getCurrencyExposureReport() {
+<span class="fc" id="L112">        List&lt;Account&gt; allAccounts = accountRepository.findAll();</span>
+<span class="fc" id="L113">        Map&lt;String, BigDecimal&gt; totalsByCurrency = new LinkedHashMap&lt;&gt;();</span>
+
+<span class="fc bfc" id="L115" title="All 2 branches covered.">        for (Account acc : allAccounts) {</span>
+<span class="fc" id="L116">            String curr = acc.getCurrency().trim();</span>
+<span class="fc" id="L117">            BigDecimal bal = entryRepository.calculateBalance(acc.getId());</span>
+<span class="fc" id="L118">            totalsByCurrency.merge(curr, bal, BigDecimal::add);</span>
+<span class="fc" id="L119">        }</span>
+
+<span class="fc" id="L121">        List&lt;Object&gt; exposures = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L122">        BigDecimal grandTotalInr = BigDecimal.ZERO;</span>
+
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        for (Map.Entry&lt;String, BigDecimal&gt; item : totalsByCurrency.entrySet()) {</span>
+<span class="fc" id="L125">            String currency = item.getKey();</span>
+<span class="fc" id="L126">            BigDecimal balance = item.getValue();</span>
+<span class="fc" id="L127">            BigDecimal inrEquivalent = balance;</span>
+<span class="fc" id="L128">            BigDecimal appliedRate = BigDecimal.ONE;</span>
+
+<span class="fc bfc" id="L130" title="All 2 branches covered.">            if (!&quot;INR&quot;.equals(currency)) {</span>
+<span class="fc" id="L131">                Optional&lt;ExchangeRateSnapshot&gt; snap = rateRepository</span>
+<span class="fc" id="L132">                        .findTopByBaseCurrencyAndQuoteCurrencyOrderByCapturedAtDesc(currency, &quot;INR&quot;);</span>
+<span class="pc bpc" id="L133" title="1 of 2 branches missed.">                if (snap.isPresent()) {</span>
+<span class="fc" id="L134">                    appliedRate = snap.get().getRate();</span>
+<span class="fc" id="L135">                    inrEquivalent = balance.multiply(appliedRate).setScale(4, RoundingMode.HALF_UP);</span>
+                }
+            }
+<span class="fc" id="L138">            grandTotalInr = grandTotalInr.add(inrEquivalent);</span>
+
+<span class="fc" id="L140">            Map&lt;String, Object&gt; row = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L141">            row.put(&quot;currency&quot;, currency);</span>
+<span class="fc" id="L142">            row.put(&quot;netBalance&quot;, balance);</span>
+<span class="fc" id="L143">            row.put(&quot;rateToInr&quot;, appliedRate);</span>
+<span class="fc" id="L144">            row.put(&quot;inrEquivalent&quot;, inrEquivalent);</span>
+<span class="fc" id="L145">            exposures.add(row);</span>
+<span class="fc" id="L146">        }</span>
+
+<span class="fc" id="L148">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L149">        report.put(&quot;report&quot;, &quot;Currency Exposure Report&quot;);</span>
+<span class="fc" id="L150">        report.put(&quot;exposures&quot;, exposures);</span>
+<span class="fc" id="L151">        report.put(&quot;totalExposureInr&quot;, grandTotalInr);</span>
+<span class="fc" id="L152">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L153">        return report;</span>
+    }
+
+    private Account findByCode(String code) {
+<span class="fc" id="L157">        return accountRepository.findAll().stream()</span>
+<span class="fc" id="L158">                .filter(a -&gt; code.equals(a.getAccountCode()))</span>
+<span class="fc" id="L159">                .findFirst()</span>
+<span class="pc" id="L160">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + code));</span>
+    }
+
+    private LedgerEntry buildEntry(Account account, String type, BigDecimal amount, String currency, String actor) {
+<span class="fc" id="L164">        LedgerEntry e = new LedgerEntry();</span>
+<span class="fc" id="L165">        e.setAccount(account);</span>
+<span class="fc" id="L166">        e.setEntryType(type);</span>
+<span class="fc" id="L167">        e.setAmount(amount);</span>
+<span class="fc" id="L168">        e.setCurrency(currency);</span>
+<span class="fc" id="L169">        e.setCreatedBy(actor);</span>
+<span class="fc" id="L170">        return e;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

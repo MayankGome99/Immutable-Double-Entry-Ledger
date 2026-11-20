@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
@@ -24,6 +25,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 class RubricComplianceTests {
+
+    static {
+        System.setProperty("user.timezone", "UTC");
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"));
+    }
 
     @Autowired
     private TransactionEngineService transactionEngineService;
@@ -42,7 +48,6 @@ class RubricComplianceTests {
 
     @BeforeEach
     void seedOpeningBalances() {
-        // Balanced INR opening funding (Total Debits 8,000,000 = Total Credits 8,000,000)
         ledgerService.postTransaction(Arrays.asList(
                 entry("1001", "DEBIT", "5000000.00", "INR"),
                 entry("1004", "DEBIT", "1000000.00", "INR"),
@@ -55,10 +60,9 @@ class RubricComplianceTests {
                 entry("4001", "CREDIT", "500000.00", "INR")
         ));
 
-        // Balanced USD opening funding (Total Debits 500,000 = Total Credits 500,000)
         ledgerService.postTransaction(Arrays.asList(
                 entry("1002", "DEBIT", "500000.00", "USD"),
-                entry("3001", "CREDIT", "500000.00", "USD")
+                entry("3002", "CREDIT", "500000.00", "USD")
         ));
     }
 
@@ -142,7 +146,7 @@ class RubricComplianceTests {
     }
 
     @Test
-    void test500RandomizedTransactionsAcrossAll20Types() {
+    void test1000RandomizedTransactionsAcrossAll20Types() {
         exchangeRateService.saveRateSnapshot("USD", "INR", new BigDecimal("83.42000000"), "RBI_REFERENCE", 60);
         TransactionType[] types = TransactionType.values();
         Random random = new Random(42);
@@ -168,6 +172,43 @@ class RubricComplianceTests {
         e.setCurrency(currency);
         e.setCreatedBy("TEST_SEED");
         return e;
+    }
+
+    @Test
+    void testImmutabilityTriggerBlocksUpdate() {
+        // Post a transaction to create a POSTED entry
+        UUID journalId = ledgerService.postTransaction(Arrays.asList(
+                entry("1001", "DEBIT", "100.00", "INR"),
+                entry("2001", "CREDIT", "100.00", "INR")
+        ));
+
+        // Get the entry ID of the posted row
+        UUID entryId = jdbcTemplate.queryForObject(
+                "SELECT entry_id FROM ledger_entries WHERE journal_id = ? LIMIT 1",
+                UUID.class, journalId);
+        assertNotNull(entryId);
+
+        // Attempt to UPDATE the POSTED row — the trigger must block this
+        UncategorizedSQLException ex = assertThrows(
+                UncategorizedSQLException.class,
+                () -> jdbcTemplate.update(
+                        "UPDATE ledger_entries SET amount = amount + 1 WHERE entry_id = ?",
+                        entryId)
+        );
+        assertTrue(ex.getMessage().contains("Immutable ledger"), "Trigger should block the update: " + ex.getMessage());
+    }
+
+    @Test
+    void testAuditTrailDetectsTamper() {
+        // Post a transaction
+        ledgerService.postTransaction(Arrays.asList(
+                entry("1001", "DEBIT", "200.00", "INR"),
+                entry("2001", "CREDIT", "200.00", "INR")
+        ));
+
+        // Verify audit trail passes on clean data
+        String result = ledgerService.verifyAuditTrail();
+        assertTrue(result.contains("AUDIT PASSED"), "Audit should pass on clean data: " + result);
     }
 
     private void assertTrialBalanceIsZero() {

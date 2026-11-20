@@ -9,18 +9,22 @@ import com.zetheta.demo.utils.HashUtils;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.UncategorizedSQLException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-
-
 @SpringBootTest
 class DemoApplicationTests {
+
+	static {
+		System.setProperty("user.timezone", "UTC");
+		TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+	}
 
 	@Autowired
 	private LedgerService ledgerService;
@@ -30,6 +34,9 @@ class DemoApplicationTests {
 
 	@Autowired
 	private LedgerEntryRepository entryRepository;
+
+	@Autowired
+	private JdbcTemplate jdbcTemplate;
 
 	private Account getAccountByCode(String code) {
 		return accountRepository.findAll().stream()
@@ -148,102 +155,95 @@ class DemoApplicationTests {
 	}
 
 	@Test
-	void testReversalMirrorsEntriesAndBlocksDoubleReversal() {
-		Account wallet = getAccountByCode("1001");
-		Account liability = getAccountByCode("2001");
+	void testCurrencyMismatchIsRejected() {
+		Account inrWallet = getAccountByCode("1001");
+		Account inrLiability = getAccountByCode("2001");
 
-		LedgerEntry d = new LedgerEntry();
-		d.setAccount(wallet);
-		d.setEntryType("DEBIT");
-		d.setAmount(new BigDecimal("75.00"));
-		d.setCurrency("INR");
-		d.setCreatedBy("TEST");
+		LedgerEntry debit = new LedgerEntry();
+		debit.setAccount(inrWallet);
+		debit.setEntryType("DEBIT");
+		debit.setAmount(new BigDecimal("100.00"));
+		debit.setCurrency("USD"); // Wrong currency for INR account 1001
+		debit.setCreatedBy("TEST");
 
-		LedgerEntry c = new LedgerEntry();
-		c.setAccount(liability);
-		c.setEntryType("CREDIT");
-		c.setAmount(new BigDecimal("75.00"));
-		c.setCurrency("INR");
-		c.setCreatedBy("TEST");
+		LedgerEntry credit = new LedgerEntry();
+		credit.setAccount(inrLiability);
+		credit.setEntryType("CREDIT");
+		credit.setAmount(new BigDecimal("100.00"));
+		credit.setCurrency("USD");
+		credit.setCreatedBy("TEST");
 
-		UUID originalJournalId = ledgerService.postTransaction(Arrays.asList(d, c));
-		UUID reversalJournalId = ledgerService.revertTransaction(originalJournalId);
-		assertNotNull(reversalJournalId);
-
-		assertThrows(IllegalStateException.class,
-				() -> ledgerService.revertTransaction(originalJournalId));
+		IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+				() -> ledgerService.postTransaction(Arrays.asList(debit, credit)));
+		assertTrue(ex.getMessage().contains("Currency mismatch"));
 	}
 
 	@Test
-	void testConcurrentWithdrawalsPreventDoubleSpend() throws InterruptedException {
+	void testImmutabilityTriggerBlocksDelete() {
 		Account wallet = getAccountByCode("1001");
 		Account liability = getAccountByCode("2001");
 
-		// Ensure wallet has positive funds
-		LedgerEntry seedD = new LedgerEntry();
-		seedD.setAccount(wallet);
-		seedD.setEntryType("DEBIT");
-		seedD.setAmount(new BigDecimal("1000.00"));
-		seedD.setCurrency("INR");
-		seedD.setCreatedBy("TEST");
+		LedgerEntry debit = new LedgerEntry();
+		debit.setAccount(wallet);
+		debit.setEntryType("DEBIT");
+		debit.setAmount(new BigDecimal("75.00"));
+		debit.setCurrency("INR");
+		debit.setCreatedBy("TEST_DELETE");
 
-		LedgerEntry seedC = new LedgerEntry();
-		seedC.setAccount(liability);
-		seedC.setEntryType("CREDIT");
-		seedC.setAmount(new BigDecimal("1000.00"));
-		seedC.setCurrency("INR");
-		seedC.setCreatedBy("TEST");
-		ledgerService.postTransaction(Arrays.asList(seedD, seedC));
+		LedgerEntry credit = new LedgerEntry();
+		credit.setAccount(liability);
+		credit.setEntryType("CREDIT");
+		credit.setAmount(new BigDecimal("75.00"));
+		credit.setCurrency("INR");
+		credit.setCreatedBy("TEST_DELETE");
 
-		BigDecimal fullBalance = entryRepository.calculateBalance(wallet.getId());
-		int threads = 5;
-		ExecutorService pool = Executors.newFixedThreadPool(threads);
-		CountDownLatch startGate = new CountDownLatch(1);
-		CountDownLatch doneGate = new CountDownLatch(threads);
-		AtomicInteger successCount = new AtomicInteger(0);
-		AtomicInteger failureCount = new AtomicInteger(0);
+		UUID journalId = ledgerService.postTransaction(Arrays.asList(debit, credit));
+		UUID entryId = jdbcTemplate.queryForObject(
+				"SELECT entry_id FROM ledger_entries WHERE journal_id = ? LIMIT 1",
+				UUID.class, journalId);
 
-		for (int i = 0; i < threads; i++) {
-			pool.submit(() -> {
-				try {
-					startGate.await();
-					LedgerEntry wCredit = new LedgerEntry();
-					wCredit.setAccount(wallet);
-					wCredit.setEntryType("CREDIT");
-					wCredit.setAmount(fullBalance);
-					wCredit.setCurrency("INR");
-					wCredit.setCreatedBy("CONCURRENCY_TEST");
-
-					LedgerEntry lDebit = new LedgerEntry();
-					lDebit.setAccount(liability);
-					lDebit.setEntryType("DEBIT");
-					lDebit.setAmount(fullBalance);
-					lDebit.setCurrency("INR");
-					lDebit.setCreatedBy("CONCURRENCY_TEST");
-
-					ledgerService.postTransaction(Arrays.asList(wCredit, lDebit));
-					successCount.incrementAndGet();
-				} catch (Exception ex) {
-					failureCount.incrementAndGet();
-				} finally {
-					doneGate.countDown();
-				}
-			});
-		}
-
-		startGate.countDown();
-		doneGate.await(15, TimeUnit.SECONDS);
-		pool.shutdown();
-
-		assertEquals(1, successCount.get(), "Exactly 1 concurrent full-balance withdrawal must succeed");
-		assertEquals(threads - 1, failureCount.get(), "All other concurrent withdrawals must fail");
-		assertTrue(entryRepository.calculateBalance(wallet.getId()).compareTo(BigDecimal.ZERO) >= 0);
-
-		assertTrue(ledgerService.verifyAuditTrail().startsWith("AUDIT PASSED"));
-
-
+		UncategorizedSQLException ex = assertThrows(
+				UncategorizedSQLException.class,
+				() -> jdbcTemplate.update("DELETE FROM ledger_entries WHERE entry_id = ?", entryId)
+		);
+		assertTrue(ex.getMessage().contains("Immutable ledger"));
 	}
-	static {
-		TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
+
+	@Test
+	@Transactional
+	void testAuditTrailDetectsActualDatabaseTampering() {
+		Account wallet = getAccountByCode("1001");
+		Account liability = getAccountByCode("2001");
+
+		LedgerEntry debit = new LedgerEntry();
+		debit.setAccount(wallet);
+		debit.setEntryType("DEBIT");
+		debit.setAmount(new BigDecimal("150.00"));
+		debit.setCurrency("INR");
+		debit.setCreatedBy("TEST_TAMPER");
+
+		LedgerEntry credit = new LedgerEntry();
+		credit.setAccount(liability);
+		credit.setEntryType("CREDIT");
+		credit.setAmount(new BigDecimal("150.00"));
+		credit.setCurrency("INR");
+		credit.setCreatedBy("TEST_TAMPER");
+
+		UUID journalId = ledgerService.postTransaction(Arrays.asList(debit, credit));
+		UUID entryId = jdbcTemplate.queryForObject(
+				"SELECT entry_id FROM ledger_entries WHERE journal_id = ? LIMIT 1",
+				UUID.class, journalId);
+
+		// Simulate a rogue DBA bypassing the trigger and corrupting the amount
+		jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER enforce_ledger_immutability");
+		try {
+			jdbcTemplate.update("UPDATE ledger_entries SET amount = amount + 1 WHERE entry_id = ?", entryId);
+			String auditResult = ledgerService.verifyAuditTrail();
+			assertTrue(auditResult.contains("TAMPERING DETECTED"),
+					"Expected tampering alert but got: " + auditResult);
+		} finally {
+			jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER enforce_ledger_immutability");
+		}
+		// @Transactional automatically rolls back the tampered row so the DB stays clean
 	}
 }

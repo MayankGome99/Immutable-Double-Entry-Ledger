@@ -25,6 +25,11 @@ import static org.junit.jupiter.api.Assertions.*;
 @SpringBootTest
 class ResilienceAndLoadTests {
 
+    static {
+        System.setProperty("user.timezone", "UTC");
+        java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"));
+    }
+
     @Autowired
     private ResilienceAndAuditService resilienceService;
 
@@ -46,7 +51,7 @@ class ResilienceAndLoadTests {
     @Test
     void testUnrealisedFxRevaluationProducesBalancedEntries() {
         Account usdWallet = findByCode("1002");
-        Account equity = findByCode("3001");
+        Account equity = findByCode("3002");
         ledgerService.postTransaction(Arrays.asList(
                 makeEntry(usdWallet, "DEBIT", new BigDecimal("1000.00"), "USD"),
                 makeEntry(equity, "CREDIT", new BigDecimal("1000.00"), "USD")

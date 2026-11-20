@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LedgerController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.controllers</a> &gt; <span class="el_source">LedgerController.java</span></div><h1>LedgerController.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.controllers;
+
+import com.zetheta.demo.Data_Transfer_Object.TransferRequest;
+import com.zetheta.demo.models.Account;
+import com.zetheta.demo.models.LedgerEntry;
+import com.zetheta.demo.repositories.AccountRepository;
+import com.zetheta.demo.repositories.LedgerEntryRepository;
+import com.zetheta.demo.services.LedgerService;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.math.BigDecimal;
+import java.time.ZonedDateTime;
+import java.util.*;
+
+@RestController
+@RequestMapping(&quot;/api/ledger&quot;)
+public class LedgerController {
+
+    private final LedgerService ledgerService;
+    private final AccountRepository accountRepository;
+    private final LedgerEntryRepository entryRepository;
+
+    public LedgerController(LedgerService ledgerService,
+                            AccountRepository accountRepository,
+<span class="fc" id="L28">                            LedgerEntryRepository entryRepository) {</span>
+<span class="fc" id="L29">        this.ledgerService = ledgerService;</span>
+<span class="fc" id="L30">        this.accountRepository = accountRepository;</span>
+<span class="fc" id="L31">        this.entryRepository = entryRepository;</span>
+<span class="fc" id="L32">    }</span>
+
+    @GetMapping(&quot;/health&quot;)
+    public ResponseEntity&lt;Object&gt; healthCheck() {
+<span class="nc" id="L36">        Map&lt;String, Object&gt; health = new LinkedHashMap&lt;&gt;();</span>
+<span class="nc" id="L37">        health.put(&quot;status&quot;, &quot;UP&quot;);</span>
+<span class="nc" id="L38">        health.put(&quot;database&quot;, &quot;CONNECTED&quot;);</span>
+<span class="nc" id="L39">        health.put(&quot;accountsCount&quot;, accountRepository.count());</span>
+<span class="nc" id="L40">        health.put(&quot;ledgerEntriesCount&quot;, entryRepository.count());</span>
+<span class="nc" id="L41">        health.put(&quot;auditStatus&quot;, ledgerService.verifyAuditTrail());</span>
+<span class="nc" id="L42">        health.put(&quot;timestamp&quot;, ZonedDateTime.now().toString());</span>
+<span class="nc" id="L43">        return ResponseEntity.ok(health);</span>
+    }
+
+    @GetMapping(&quot;/accounts&quot;)
+    public List&lt;Account&gt; getAllAccounts() {
+<span class="nc" id="L48">        return accountRepository.findAll();</span>
+    }
+
+    @GetMapping(&quot;/entries&quot;)
+    public List&lt;LedgerEntry&gt; getAllEntries() {
+<span class="nc" id="L53">        return entryRepository.findAll();</span>
+    }
+
+    @PostMapping(&quot;/transactions&quot;)
+    public ResponseEntity&lt;Object&gt; createTransaction(
+            @RequestHeader(value = &quot;X-Idempotency-Key&quot;, required = false) String idempotencyKey,
+            @RequestBody List&lt;LedgerEntry&gt; entries) {
+<span class="nc bnc" id="L60" title="All 2 branches missed.">        for (int i = 0; i &lt; entries.size(); i++) {</span>
+<span class="nc" id="L61">            entries.get(i).setEntryId(null);</span>
+<span class="nc bnc" id="L62" title="All 4 branches missed.">            if (idempotencyKey != null &amp;&amp; !idempotencyKey.isBlank()) {</span>
+<span class="nc" id="L63">                entries.get(i).setIdempotencyKey(idempotencyKey + &quot;-&quot; + i);</span>
+            }
+        }
+<span class="nc" id="L66">        UUID journalId = ledgerService.postTransaction(entries);</span>
+<span class="nc" id="L67">        return ResponseEntity.ok(Map.of(</span>
+                &quot;message&quot;, &quot;Transaction posted and locked with SHA-256 successfully!&quot;,
+<span class="nc" id="L69">                &quot;journalId&quot;, journalId.toString()</span>
+        ));
+    }
+
+    @PostMapping(&quot;/reversals/{journalId}&quot;)
+    public ResponseEntity&lt;Object&gt; reverseTransaction(@PathVariable UUID journalId) {
+<span class="nc" id="L75">        UUID reversalJournalId = ledgerService.revertTransaction(journalId);</span>
+<span class="nc" id="L76">        return ResponseEntity.ok(Map.of(</span>
+                &quot;message&quot;, &quot;Reversal posted successfully following no-mutation principle.&quot;,
+<span class="nc" id="L78">                &quot;originalJournalId&quot;, journalId.toString(),</span>
+<span class="nc" id="L79">                &quot;reversalJournalId&quot;, reversalJournalId.toString()</span>
+        ));
+    }
+
+    @GetMapping(&quot;/trial-balance&quot;)
+    public List&lt;Object[]&gt; getTrialBalance() {
+<span class="nc" id="L85">        return entryRepository.generateTrialBalance();</span>
+    }
+
+    @GetMapping(&quot;/reports/income-statement&quot;)
+    public ResponseEntity&lt;Object&gt; getIncomeStatement() {
+<span class="nc" id="L90">        return ResponseEntity.ok(ledgerService.getIncomeStatement());</span>
+    }
+
+    @GetMapping(&quot;/reports/balance-sheet&quot;)
+    public ResponseEntity&lt;Object&gt; getBalanceSheet() {
+<span class="nc" id="L95">        return ResponseEntity.ok(ledgerService.getBalanceSheet());</span>
+    }
+
+    @GetMapping(&quot;/audit&quot;)
+    public ResponseEntity&lt;String&gt; runSecurityAudit() {
+<span class="nc" id="L100">        return ResponseEntity.ok(ledgerService.verifyAuditTrail());</span>
+    }
+
+    @GetMapping(&quot;/accounts/{accountId}/statement&quot;)
+    public ResponseEntity&lt;Object&gt; getAccountStatement(@PathVariable UUID accountId) {
+<span class="nc" id="L105">        List&lt;LedgerEntry&gt; statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">        if (statement.isEmpty()) {</span>
+<span class="nc" id="L107">            return ResponseEntity.notFound().build();</span>
+        }
+<span class="nc" id="L109">        return ResponseEntity.ok(statement);</span>
+    }
+
+    @GetMapping(value = &quot;/accounts/{accountId}/statement/csv&quot;, produces = &quot;text/csv&quot;)
+    public ResponseEntity&lt;String&gt; exportAccountStatementCsv(@PathVariable UUID accountId) {
+<span class="nc" id="L114">        List&lt;LedgerEntry&gt; statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);</span>
+<span class="nc" id="L115">        StringBuilder csv = new StringBuilder(&quot;entry_id,journal_id,entry_type,amount,currency,status,effective_date,created_by\n&quot;);</span>
+<span class="nc bnc" id="L116" title="All 2 branches missed.">        for (LedgerEntry e : statement) {</span>
+<span class="nc" id="L117">            csv.append(e.getEntryId()).append(&quot;,&quot;)</span>
+<span class="nc" id="L118">                    .append(e.getJournalId()).append(&quot;,&quot;)</span>
+<span class="nc" id="L119">                    .append(e.getEntryType()).append(&quot;,&quot;)</span>
+<span class="nc" id="L120">                    .append(e.getAmount()).append(&quot;,&quot;)</span>
+<span class="nc" id="L121">                    .append(e.getCurrency().trim()).append(&quot;,&quot;)</span>
+<span class="nc" id="L122">                    .append(e.getStatus()).append(&quot;,&quot;)</span>
+<span class="nc" id="L123">                    .append(e.getEffectiveDate()).append(&quot;,&quot;)</span>
+<span class="nc" id="L124">                    .append(e.getCreatedBy()).append(&quot;\n&quot;);</span>
+<span class="nc" id="L125">        }</span>
+<span class="nc" id="L126">        return ResponseEntity.ok()</span>
+<span class="nc" id="L127">                .header(HttpHeaders.CONTENT_DISPOSITION, &quot;attachment; filename=statement_&quot; + accountId + &quot;.csv&quot;)</span>
+<span class="nc" id="L128">                .contentType(MediaType.parseMediaType(&quot;text/csv&quot;))</span>
+<span class="nc" id="L129">                .body(csv.toString());</span>
+    }
+
+    @PostMapping(&quot;/transfer&quot;)
+    public ResponseEntity&lt;Object&gt; transfer(@RequestBody TransferRequest transferRequest) {
+<span class="nc" id="L134">        UUID journalId = ledgerService.transferFunds(</span>
+<span class="nc" id="L135">                transferRequest.fromAccountId(),</span>
+<span class="nc" id="L136">                transferRequest.toAccountId(),</span>
+<span class="nc" id="L137">                transferRequest.amount()</span>
+        );
+<span class="nc" id="L139">        return ResponseEntity.ok(Map.of(</span>
+<span class="nc" id="L140">                &quot;message&quot;, &quot;Transfer of &quot; + transferRequest.amount() + &quot; completed successfully!&quot;,</span>
+<span class="nc" id="L141">                &quot;journalId&quot;, journalId.toString()</span>
+        ));
+    }
+
+    @PostMapping(&quot;/stress-test&quot;)
+    public ResponseEntity&lt;String&gt; runStressTest() {
+<span class="nc" id="L147">        long startTime = System.currentTimeMillis();</span>
+
+<span class="nc" id="L149">        Account wallet = accountRepository.findAll().stream()</span>
+<span class="nc" id="L150">                .filter(a -&gt; &quot;1001&quot;.equals(a.getAccountCode()))</span>
+<span class="nc" id="L151">                .findFirst()</span>
+<span class="nc" id="L152">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Wallet 1001 not found&quot;));</span>
+
+<span class="nc" id="L154">        Account depositLiability = accountRepository.findAll().stream()</span>
+<span class="nc" id="L155">                .filter(a -&gt; &quot;2001&quot;.equals(a.getAccountCode()))</span>
+<span class="nc" id="L156">                .findFirst()</span>
+<span class="nc" id="L157">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Liability 2001 not found&quot;));</span>
+
+<span class="nc bnc" id="L159" title="All 2 branches missed.">        for (int i = 0; i &lt; 1000; i++) {</span>
+<span class="nc" id="L160">            LedgerEntry debit = new LedgerEntry();</span>
+<span class="nc" id="L161">            debit.setAccount(wallet);</span>
+<span class="nc" id="L162">            debit.setEntryType(&quot;DEBIT&quot;);</span>
+<span class="nc" id="L163">            debit.setAmount(new BigDecimal(&quot;10.00&quot;));</span>
+<span class="nc" id="L164">            debit.setCurrency(&quot;INR&quot;);</span>
+<span class="nc" id="L165">            debit.setCreatedBy(&quot;STRESS_TEST&quot;);</span>
+
+<span class="nc" id="L167">            LedgerEntry credit = new LedgerEntry();</span>
+<span class="nc" id="L168">            credit.setAccount(depositLiability);</span>
+<span class="nc" id="L169">            credit.setEntryType(&quot;CREDIT&quot;);</span>
+<span class="nc" id="L170">            credit.setAmount(new BigDecimal(&quot;10.00&quot;));</span>
+<span class="nc" id="L171">            credit.setCurrency(&quot;INR&quot;);</span>
+<span class="nc" id="L172">            credit.setCreatedBy(&quot;STRESS_TEST&quot;);</span>
+
+<span class="nc" id="L174">            ledgerService.postTransaction(Arrays.asList(debit, credit));</span>
+        }
+
+<span class="nc" id="L177">        long duration = System.currentTimeMillis() - startTime;</span>
+<span class="nc" id="L178">        String auditStatus = ledgerService.verifyAuditTrail();</span>
+
+<span class="nc" id="L180">        return ResponseEntity.ok(&quot;STRESS TEST PASSED! 1,000 transactions (2,000 ledger entries) posted in &quot;</span>
+                + duration + &quot; ms. | &quot; + auditStatus);
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

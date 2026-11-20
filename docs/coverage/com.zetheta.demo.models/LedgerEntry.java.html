@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LedgerEntry.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.models</a> &gt; <span class="el_source">LedgerEntry.java</span></div><h1>LedgerEntry.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.models;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.ZonedDateTime;
+import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+@Entity
+@Table(name = &quot;ledger_entries&quot;)
+public class LedgerEntry {
+
+    @Id
+    @Column(name = &quot;entry_id&quot;, nullable = false, updatable = false)
+    private UUID entryId;
+
+    @Column(name = &quot;journal_id&quot;, nullable = false, updatable = false)
+    private UUID journalId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = &quot;account_id&quot;, nullable = false, updatable = false)
+    private Account account;
+
+    @Column(name = &quot;entry_type&quot;, nullable = false, updatable = false)
+    private String entryType; // debit OR credit code
+
+    @Column(nullable = false, precision = 19, scale = 4, updatable = false)
+    private BigDecimal amount;
+
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = &quot;hash&quot;, nullable = false, length = 64, updatable = false, columnDefinition = &quot;CHAR(64)&quot;)
+    private String hash;
+
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = &quot;previous_hash&quot;, length = 64, updatable = false, columnDefinition = &quot;CHAR(64)&quot;)
+    private String previousHash;
+
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(nullable = false, length = 3, updatable = false, columnDefinition = &quot;CHAR(3)&quot;)
+    private String currency;
+
+    @Column(name = &quot;effective_date&quot;, nullable = false)
+    private ZonedDateTime effectiveDate;
+
+    @Column(name = &quot;created_by&quot;, nullable = false)
+    private String createdBy;
+
+    @Column(name = &quot;idempotency_key&quot;, nullable = false, unique = true, length = 64)
+    private String idempotencyKey;
+
+    @Column(nullable = false, length = 20)
+    private String status;
+
+    // Default constructor required by JPA
+<span class="fc" id="L56">    public LedgerEntry() {}</span>
+
+    // ==================== GETTERS ====================
+<span class="fc" id="L59">    public UUID getEntryId() { return entryId; }</span>
+<span class="fc" id="L60">    public UUID getJournalId() { return journalId; }</span>
+<span class="fc" id="L61">    public Account getAccount() { return account; }</span>
+<span class="fc" id="L62">    public String getEntryType() { return entryType; }</span>
+<span class="fc" id="L63">    public BigDecimal getAmount() { return amount; }</span>
+<span class="nc" id="L64">    public String getHash() { return hash; }</span>
+<span class="nc" id="L65">    public String getPreviousHash() { return previousHash; }</span>
+<span class="fc" id="L66">    public String getCurrency() { return currency; }</span>
+<span class="nc" id="L67">    public ZonedDateTime getEffectiveDate() { return effectiveDate; }</span>
+<span class="fc" id="L68">    public String getCreatedBy() { return createdBy; }</span>
+<span class="fc" id="L69">    public String getIdempotencyKey() { return idempotencyKey; }</span>
+<span class="nc" id="L70">    public String getStatus() { return status; }</span>
+
+    // ==================== SETTERS ====================
+<span class="fc" id="L73">    public void setEntryId(UUID entryId) { this.entryId = entryId; }</span>
+<span class="fc" id="L74">    public void setJournalId(UUID journalId) { this.journalId = journalId; }</span>
+<span class="fc" id="L75">    public void setAccount(Account account) { this.account = account; }</span>
+<span class="fc" id="L76">    public void setEntryType(String entryType) { this.entryType = entryType; }</span>
+<span class="fc" id="L77">    public void setAmount(BigDecimal amount) { this.amount = amount; }</span>
+<span class="fc" id="L78">    public void setHash(String hash) { this.hash = hash; }</span>
+<span class="fc" id="L79">    public void setPreviousHash(String previousHash) { this.previousHash = previousHash; }</span>
+<span class="fc" id="L80">    public void setCurrency(String currency) { this.currency = currency; }</span>
+<span class="fc" id="L81">    public void setEffectiveDate(ZonedDateTime effectiveDate) { this.effectiveDate = effectiveDate; }</span>
+<span class="fc" id="L82">    public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }</span>
+<span class="fc" id="L83">    public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }</span>
+<span class="fc" id="L84">    public void setStatus(String status) { this.status = status; }</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

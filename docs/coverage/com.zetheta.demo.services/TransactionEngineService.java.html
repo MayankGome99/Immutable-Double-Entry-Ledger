@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionEngineService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.services</a> &gt; <span class="el_source">TransactionEngineService.java</span></div><h1>TransactionEngineService.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.services;
+
+import com.zetheta.demo.models.Account;
+import com.zetheta.demo.models.FeeRefundPolicy;
+import com.zetheta.demo.models.LedgerEntry;
+import com.zetheta.demo.models.TransactionType;
+import com.zetheta.demo.repositories.AccountRepository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+@Service
+public class TransactionEngineService {
+
+    private final AccountRepository accountRepository;
+    private final LedgerService ledgerService;
+    private final ExchangeRateService exchangeRateService;
+    private final JdbcTemplate jdbcTemplate;
+
+    public TransactionEngineService(AccountRepository accountRepository,
+                                    LedgerService ledgerService,
+                                    ExchangeRateService exchangeRateService,
+<span class="fc" id="L27">                                    JdbcTemplate jdbcTemplate) {</span>
+<span class="fc" id="L28">        this.accountRepository = accountRepository;</span>
+<span class="fc" id="L29">        this.ledgerService = ledgerService;</span>
+<span class="fc" id="L30">        this.exchangeRateService = exchangeRateService;</span>
+<span class="fc" id="L31">        this.jdbcTemplate = jdbcTemplate;</span>
+<span class="fc" id="L32">    }</span>
+
+    @Transactional
+    public Map&lt;String, Object&gt; processTypedTransaction(TransactionType type, BigDecimal amount, String createdBy) {
+<span class="pc bpc" id="L36" title="1 of 2 branches missed.">        if (type == null) {</span>
+<span class="nc" id="L37">            throw new IllegalArgumentException(&quot;TransactionType is required.&quot;);</span>
+        }
+<span class="pc bpc" id="L39" title="2 of 4 branches missed.">        if (amount == null || amount.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L40">            throw new IllegalArgumentException(&quot;Amount must be greater than zero.&quot;);</span>
+        }
+
+<span class="pc bpc" id="L43" title="2 of 4 branches missed.">        String actor = (createdBy == null || createdBy.isBlank()) ? &quot;TXN_ENGINE&quot; : createdBy;</span>
+
+<span class="fc bfc" id="L45" title="All 2 branches covered.">        if (type == TransactionType.FX_CONVERSION) {</span>
+<span class="fc" id="L46">            return exchangeRateService.convertUsdToInr(amount, actor);</span>
+        }
+
+<span class="fc" id="L49">        BigDecimal fee = amount.multiply(new BigDecimal(&quot;0.01&quot;)).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L50">        BigDecimal tax = amount.multiply(new BigDecimal(&quot;0.005&quot;)).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L51">        BigDecimal netAfterFee = amount.subtract(fee);</span>
+<span class="fc" id="L52">        BigDecimal netAfterTax = amount.subtract(tax);</span>
+
+<span class="fc" id="L54">        List&lt;LedgerEntry&gt; entries = new ArrayList&lt;&gt;();</span>
+
+<span class="pc bpc" id="L56" title="1 of 20 branches missed.">        switch (type) {</span>
+            case DEPOSIT_BANK -&gt; {
+<span class="fc" id="L58">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L59">                entries.add(buildEntry(&quot;2001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L60">            }</span>
+            case DEPOSIT_CARD -&gt; {
+<span class="fc" id="L62">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L63">                entries.add(buildEntry(&quot;2001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L64">                entries.add(buildEntry(&quot;5001&quot;, &quot;DEBIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L65">                entries.add(buildEntry(&quot;2002&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L66">            }</span>
+            case WITHDRAWAL_BANK -&gt; {
+<span class="fc" id="L68">                entries.add(buildEntry(&quot;2001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L69">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L70">            }</span>
+            case P2P_TRANSFER -&gt; {
+<span class="fc" id="L72">                entries.add(buildEntry(&quot;2001&quot;, &quot;DEBIT&quot;, amount.add(fee), &quot;INR&quot;, actor));</span>
+<span class="fc" id="L73">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L74">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L75">            }</span>
+            case MERCHANT_PAYMENT_QR -&gt; {
+<span class="fc" id="L77">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount.add(fee).add(tax), &quot;INR&quot;, actor));</span>
+<span class="fc" id="L78">                entries.add(buildEntry(&quot;2002&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L79">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L80">                entries.add(buildEntry(&quot;2020&quot;, &quot;CREDIT&quot;, tax, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L81">            }</span>
+            case MERCHANT_PAYMENT_ONLINE -&gt; {
+<span class="fc" id="L83">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount.add(fee), &quot;INR&quot;, actor));</span>
+<span class="fc" id="L84">                entries.add(buildEntry(&quot;2002&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L85">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L86">                entries.add(buildEntry(&quot;5001&quot;, &quot;DEBIT&quot;, tax, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L87">                entries.add(buildEntry(&quot;1010&quot;, &quot;CREDIT&quot;, tax, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L88">            }</span>
+            case BILL_PAYMENT -&gt; {
+<span class="fc" id="L90">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount.add(fee), &quot;INR&quot;, actor));</span>
+<span class="fc" id="L91">                entries.add(buildEntry(&quot;2002&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L92">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L93">            }</span>
+            case INTEREST_ACCRUAL -&gt; {
+<span class="fc" id="L95">                entries.add(buildEntry(&quot;5003&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L96">                entries.add(buildEntry(&quot;2010&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L97">            }</span>
+            case INTEREST_PAYOUT -&gt; {
+<span class="fc" id="L99">                entries.add(buildEntry(&quot;2010&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L100">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, netAfterTax, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L101">                entries.add(buildEntry(&quot;2020&quot;, &quot;CREDIT&quot;, tax, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L102">            }</span>
+            case FEE_DEDUCTION -&gt; {
+<span class="fc" id="L104">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L105">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L106">            }</span>
+            case CASHBACK_CREDIT -&gt; {
+<span class="fc" id="L108">                entries.add(buildEntry(&quot;5002&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L109">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L110">            }</span>
+            case PROMOTIONAL_CREDIT -&gt; {
+<span class="fc" id="L112">                entries.add(buildEntry(&quot;5004&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L113">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L114">            }</span>
+            case LOAN_DISBURSEMENT -&gt; {
+<span class="fc" id="L116">                entries.add(buildEntry(&quot;1020&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L117">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, netAfterFee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L118">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L119">            }</span>
+            case LOAN_EMI_PAYMENT -&gt; {
+<span class="fc" id="L121">                entries.add(buildEntry(&quot;1001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L122">                entries.add(buildEntry(&quot;1020&quot;, &quot;CREDIT&quot;, netAfterFee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L123">                entries.add(buildEntry(&quot;4002&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L124">            }</span>
+            case REFUND_FULL -&gt; {
+<span class="fc" id="L126">                entries.add(buildEntry(&quot;2002&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L127">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L128">            }</span>
+            case REFUND_PARTIAL -&gt; {
+<span class="fc" id="L130">                BigDecimal half = amount.divide(new BigDecimal(&quot;2&quot;), 4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L131">                entries.add(buildEntry(&quot;2002&quot;, &quot;DEBIT&quot;, half, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L132">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, half, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L133">            }</span>
+            case CHARGEBACK -&gt; {
+<span class="fc" id="L135">                entries.add(buildEntry(&quot;1010&quot;, &quot;DEBIT&quot;, amount.add(fee), &quot;INR&quot;, actor));</span>
+<span class="fc" id="L136">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L137">                entries.add(buildEntry(&quot;4001&quot;, &quot;CREDIT&quot;, fee, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L138">            }</span>
+            case REWARD_POINTS_REDEMPTION -&gt; {
+<span class="fc" id="L140">                entries.add(buildEntry(&quot;2030&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L141">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L142">            }</span>
+            case ACCOUNT_CLOSURE_SWEEP -&gt; {
+<span class="fc" id="L144">                entries.add(buildEntry(&quot;2001&quot;, &quot;DEBIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L145">                entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, amount, &quot;INR&quot;, actor));</span>
+<span class="fc" id="L146">            }</span>
+<span class="nc" id="L147">            default -&gt; throw new IllegalArgumentException(&quot;Unsupported transaction type: &quot; + type);</span>
+        }
+
+<span class="fc" id="L150">        UUID journalId = ledgerService.postTransaction(entries);</span>
+
+<span class="fc" id="L152">        Map&lt;String, Object&gt; response = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L153">        response.put(&quot;status&quot;, &quot;POSTED&quot;);</span>
+<span class="fc" id="L154">        response.put(&quot;transactionType&quot;, type.name());</span>
+<span class="fc" id="L155">        response.put(&quot;journalId&quot;, journalId.toString());</span>
+<span class="fc" id="L156">        response.put(&quot;amount&quot;, amount);</span>
+<span class="fc" id="L157">        response.put(&quot;entriesCount&quot;, entries.size());</span>
+<span class="fc" id="L158">        return response;</span>
+    }
+
+    @Transactional
+    public Map&lt;String, Object&gt; processPartialRefund(UUID originalJournalId,
+                                                    BigDecimal originalAmount,
+                                                    BigDecimal originalFee,
+                                                    BigDecimal refundAmount,
+                                                    FeeRefundPolicy feePolicy,
+                                                    String idempotencyKey,
+                                                    String createdBy) {
+<span class="pc bpc" id="L169" title="3 of 6 branches missed.">        if (originalJournalId == null || refundAmount == null || originalAmount == null) {</span>
+<span class="nc" id="L170">            throw new IllegalArgumentException(&quot;originalJournalId, originalAmount, and refundAmount are required.&quot;);</span>
+        }
+<span class="pc bpc" id="L172" title="1 of 2 branches missed.">        if (refundAmount.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L173">            throw new IllegalArgumentException(&quot;Refund amount must be greater than zero.&quot;);</span>
+        }
+<span class="pc bpc" id="L175" title="2 of 4 branches missed.">        if (idempotencyKey == null || idempotencyKey.isBlank()) {</span>
+<span class="nc" id="L176">            throw new IllegalArgumentException(&quot;Idempotency key is required for partial refunds.&quot;);</span>
+        }
+
+<span class="fc" id="L179">        Integer existing = jdbcTemplate.queryForObject(</span>
+                &quot;SELECT COUNT(*) FROM partial_refunds WHERE original_journal_id = ? AND idempotency_key = ?&quot;,
+                Integer.class, originalJournalId, idempotencyKey);
+<span class="pc bpc" id="L182" title="1 of 4 branches missed.">        if (existing != null &amp;&amp; existing &gt; 0) {</span>
+<span class="fc" id="L183">            throw new IllegalStateException(&quot;Duplicate partial refund rejected for idempotency key: &quot; + idempotencyKey);</span>
+        }
+
+<span class="fc" id="L186">        BigDecimal alreadyRefunded = jdbcTemplate.queryForObject(</span>
+                &quot;SELECT COALESCE(SUM(refund_amount), 0) FROM partial_refunds WHERE original_journal_id = ?&quot;,
+                BigDecimal.class, originalJournalId);
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">        if (alreadyRefunded == null) {</span>
+<span class="nc" id="L190">            alreadyRefunded = BigDecimal.ZERO;</span>
+        }
+
+<span class="fc bfc" id="L193" title="All 2 branches covered.">        if (alreadyRefunded.add(refundAmount).compareTo(originalAmount) &gt; 0) {</span>
+<span class="fc" id="L194">            throw new IllegalArgumentException(</span>
+                    &quot;Refund exceeds original amount. Original: &quot; + originalAmount
+                            + &quot;, Already refunded: &quot; + alreadyRefunded
+                            + &quot;, Requested: &quot; + refundAmount);
+        }
+
+<span class="pc bpc" id="L200" title="1 of 2 branches missed.">        BigDecimal safeFee = (originalFee == null) ? BigDecimal.ZERO : originalFee;</span>
+<span class="pc bpc" id="L201" title="1 of 2 branches missed.">        FeeRefundPolicy policy = (feePolicy == null) ? FeeRefundPolicy.NONE : feePolicy;</span>
+<span class="fc bfc" id="L202" title="All 3 branches covered.">        BigDecimal feeToRefund = switch (policy) {</span>
+<span class="fc" id="L203">            case PROPORTIONAL -&gt; safeFee.multiply(refundAmount)</span>
+<span class="fc" id="L204">                    .divide(originalAmount, 4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L205">            case FULL -&gt; safeFee;</span>
+<span class="fc" id="L206">            case NONE -&gt; BigDecimal.ZERO;</span>
+        };
+
+<span class="pc bpc" id="L209" title="2 of 4 branches missed.">        String actor = (createdBy == null || createdBy.isBlank()) ? &quot;REFUND_ENGINE&quot; : createdBy;</span>
+<span class="fc" id="L210">        List&lt;LedgerEntry&gt; entries = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L211">        entries.add(buildEntry(&quot;2002&quot;, &quot;DEBIT&quot;, refundAmount, &quot;INR&quot;, actor));</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">        if (feeToRefund.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L213">            entries.add(buildEntry(&quot;4001&quot;, &quot;DEBIT&quot;, feeToRefund, &quot;INR&quot;, actor));</span>
+        }
+<span class="fc" id="L215">        entries.add(buildEntry(&quot;1001&quot;, &quot;CREDIT&quot;, refundAmount.add(feeToRefund), &quot;INR&quot;, actor));</span>
+
+<span class="fc" id="L217">        UUID refundJournalId = ledgerService.postTransaction(entries);</span>
+
+<span class="fc" id="L219">        jdbcTemplate.update(</span>
+                &quot;INSERT INTO partial_refunds (original_journal_id, refund_journal_id, idempotency_key, original_amount, refund_amount, fee_refunded, fee_policy) VALUES (?, ?, ?, ?, ?, ?, ?)&quot;,
+<span class="fc" id="L221">                originalJournalId, refundJournalId, idempotencyKey, originalAmount, refundAmount, feeToRefund, policy.name());</span>
+
+<span class="fc" id="L223">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L224">        result.put(&quot;status&quot;, &quot;PARTIALLY_REFUNDED&quot;);</span>
+<span class="fc" id="L225">        result.put(&quot;originalJournalId&quot;, originalJournalId.toString());</span>
+<span class="fc" id="L226">        result.put(&quot;refundJournalId&quot;, refundJournalId.toString());</span>
+<span class="fc" id="L227">        result.put(&quot;refundAmount&quot;, refundAmount);</span>
+<span class="fc" id="L228">        result.put(&quot;feePolicy&quot;, policy.name());</span>
+<span class="fc" id="L229">        result.put(&quot;feeRefunded&quot;, feeToRefund);</span>
+<span class="fc" id="L230">        result.put(&quot;totalRefundedSoFar&quot;, alreadyRefunded.add(refundAmount));</span>
+<span class="fc" id="L231">        result.put(&quot;remainingRefundable&quot;, originalAmount.subtract(alreadyRefunded.add(refundAmount)));</span>
+<span class="fc" id="L232">        return result;</span>
+    }
+
+    private LedgerEntry buildEntry(String accountCode, String type, BigDecimal amount, String currency, String actor) {
+<span class="fc" id="L236">        Account account = accountRepository.findAll().stream()</span>
+<span class="fc" id="L237">                .filter(a -&gt; accountCode.equals(a.getAccountCode()))</span>
+<span class="fc" id="L238">                .findFirst()</span>
+<span class="pc" id="L239">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + accountCode));</span>
+<span class="fc" id="L240">        LedgerEntry e = new LedgerEntry();</span>
+<span class="fc" id="L241">        e.setAccount(account);</span>
+<span class="fc" id="L242">        e.setEntryType(type);</span>
+<span class="fc" id="L243">        e.setAmount(amount);</span>
+<span class="fc" id="L244">        e.setCurrency(currency);</span>
+<span class="fc" id="L245">        e.setCreatedBy(actor);</span>
+<span class="fc" id="L246">        return e;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

@@ -12,8 +12,7 @@ import org.hibernate.type.SqlTypes;
 public class LedgerEntry {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    @Column(name = "entry_id")
+    @Column(name = "entry_id", nullable = false, updatable = false)
     private UUID entryId;
 
     @Column(name = "journal_id", nullable = false, updatable = false)

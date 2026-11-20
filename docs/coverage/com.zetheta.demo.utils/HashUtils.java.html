@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>HashUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.utils</a> &gt; <span class="el_source">HashUtils.java</span></div><h1>HashUtils.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.utils;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.UUID;
+
+public final class HashUtils {
+
+    public static final String GENESIS_HASH =
+            &quot;0000000000000000000000000000000000000000000000000000000000000000&quot;;
+
+    private HashUtils() {
+    }
+
+    public static String sha256(String input) {
+        try {
+<span class="fc" id="L20">            MessageDigest digest = MessageDigest.getInstance(&quot;SHA-256&quot;);</span>
+<span class="fc" id="L21">            byte[] bytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));</span>
+<span class="fc" id="L22">            StringBuilder hex = new StringBuilder(bytes.length * 2);</span>
+<span class="fc bfc" id="L23" title="All 2 branches covered.">            for (byte b : bytes) {</span>
+<span class="fc" id="L24">                hex.append(String.format(&quot;%02x&quot;, b));</span>
+            }
+<span class="fc" id="L26">            return hex.toString();</span>
+<span class="nc" id="L27">        } catch (NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L28">            throw new IllegalStateException(&quot;SHA-256 algorithm not available&quot;, e);</span>
+        }
+    }
+
+    public static String normalizeAmount(BigDecimal amount) {
+<span class="pc bpc" id="L33" title="1 of 2 branches missed.">        if (amount == null) {</span>
+<span class="nc" id="L34">            return &quot;0&quot;;</span>
+        }
+<span class="fc" id="L36">        return amount.stripTrailingZeros().toPlainString();</span>
+    }
+
+    public static String computeEntryHash(
+            String previousHash,
+            UUID entryId,
+            UUID journalId,
+            UUID accountId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            Instant effectiveDate,
+            String createdBy
+    ) {
+<span class="pc bpc" id="L50" title="2 of 4 branches missed.">        String prev = (previousHash == null || previousHash.isBlank()) ? GENESIS_HASH : previousHash.trim();</span>
+<span class="fc" id="L51">        String payload = String.join(&quot;|&quot;,</span>
+                prev,
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">                entryId == null ? &quot;&quot; : entryId.toString(),</span>
+<span class="pc bpc" id="L54" title="1 of 2 branches missed.">                journalId == null ? &quot;&quot; : journalId.toString(),</span>
+<span class="pc bpc" id="L55" title="1 of 2 branches missed.">                accountId == null ? &quot;&quot; : accountId.toString(),</span>
+<span class="pc bpc" id="L56" title="1 of 2 branches missed.">                entryType == null ? &quot;&quot; : entryType.trim().toUpperCase(),</span>
+<span class="fc" id="L57">                normalizeAmount(amount),</span>
+<span class="pc bpc" id="L58" title="1 of 2 branches missed.">                currency == null ? &quot;&quot; : currency.trim().toUpperCase(),</span>
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">                effectiveDate == null ? &quot;&quot; : effectiveDate.toString(),</span>
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">                createdBy == null ? &quot;&quot; : createdBy.trim()</span>
+        );
+<span class="fc" id="L62">        return sha256(payload);</span>
+    }
+    public static String generateSHA256(String input) {
+<span class="fc" id="L65">        return sha256(input);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

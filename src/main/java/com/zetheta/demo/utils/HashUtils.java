@@ -1,27 +1,67 @@
 package com.zetheta.demo.utils;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.UUID;
 
-public class HashUtils {
+public final class HashUtils {
 
-    // Ye method data ko SHA-256 format (64-character string) me convert karega
-    public static String generateSHA256(String data) {
+    public static final String GENESIS_HASH =
+            "0000000000000000000000000000000000000000000000000000000000000000";
+
+    private HashUtils() {
+    }
+
+    public static String sha256(String input) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] encodedhash = digest.digest(data.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hexString = new StringBuilder(2 * encodedhash.length);
-            for (byte b : encodedhash) {
-                String hex = Integer.toHexString(0xff & b);
-                if (hex.length() == 1) {
-                    hexString.append('0');
-                }
-                hexString.append(hex);
+            byte[] bytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) {
+                hex.append(String.format("%02x", b));
             }
-            return hexString.toString();
+            return hex.toString();
         } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 algorithm not found", e);
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
         }
+    }
+
+    public static String normalizeAmount(BigDecimal amount) {
+        if (amount == null) {
+            return "0";
+        }
+        return amount.stripTrailingZeros().toPlainString();
+    }
+
+    public static String computeEntryHash(
+            String previousHash,
+            UUID entryId,
+            UUID journalId,
+            UUID accountId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            Instant effectiveDate,
+            String createdBy
+    ) {
+        String prev = (previousHash == null || previousHash.isBlank()) ? GENESIS_HASH : previousHash.trim();
+        String payload = String.join("|",
+                prev,
+                entryId == null ? "" : entryId.toString(),
+                journalId == null ? "" : journalId.toString(),
+                accountId == null ? "" : accountId.toString(),
+                entryType == null ? "" : entryType.trim().toUpperCase(),
+                normalizeAmount(amount),
+                currency == null ? "" : currency.trim().toUpperCase(),
+                effectiveDate == null ? "" : effectiveDate.toString(),
+                createdBy == null ? "" : createdBy.trim()
+        );
+        return sha256(payload);
+    }
+    public static String generateSHA256(String input) {
+        return sha256(input);
     }
 }

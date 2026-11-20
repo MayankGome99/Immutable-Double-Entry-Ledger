@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LedgerEntryRepository.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.repositories</a> &gt; <span class="el_source">LedgerEntryRepository.java</span></div><h1>LedgerEntryRepository.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.repositories;
+
+import com.zetheta.demo.models.LedgerEntry;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.math.BigDecimal;
+import java.time.ZonedDateTime;
+import java.util.List;
+import java.util.UUID;
+
+public interface LedgerEntryRepository extends JpaRepository&lt;LedgerEntry, UUID&gt; {
+
+    @Query(&quot;SELECT COALESCE(SUM(CASE &quot; +
+            &quot;WHEN a.accountType IN ('Asset', 'Expense') THEN (CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE -e.amount END) &quot; +
+            &quot;ELSE (CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE -e.amount END) END), 0) &quot; +
+            &quot;FROM LedgerEntry e JOIN e.account a WHERE a.id = :accountId AND e.status = 'POSTED'&quot;)
+    BigDecimal calculateBalance(@Param(&quot;accountId&quot;) UUID accountId);
+
+    @Query(&quot;SELECT COALESCE(SUM(CASE &quot; +
+            &quot;WHEN a.accountType IN ('Asset', 'Expense') THEN (CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE -e.amount END) &quot; +
+            &quot;ELSE (CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE -e.amount END) END), 0) &quot; +
+            &quot;FROM LedgerEntry e JOIN e.account a &quot; +
+            &quot;WHERE a.id = :accountId AND TRIM(e.currency) = :currency AND e.status = 'POSTED'&quot;)
+    BigDecimal calculateBalanceByCurrency(@Param(&quot;accountId&quot;) UUID accountId, @Param(&quot;currency&quot;) String currency);
+
+    boolean existsByIdempotencyKey(String idempotencyKey);
+
+    List&lt;LedgerEntry&gt; findByJournalId(UUID journalId);
+
+    // Per-currency Trial Balance with normal-balance sign &amp; optional as-of date
+    @Query(&quot;SELECT a.accountCode, a.accountName, a.accountType, TRIM(e.currency), &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE 0 END), 0), &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE 0 END), 0), &quot; +
+            &quot;COALESCE(SUM(CASE &quot; +
+            &quot;WHEN a.accountType IN ('Asset', 'Expense') THEN (CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE -e.amount END) &quot; +
+            &quot;ELSE (CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE -e.amount END) END), 0) &quot; +
+            &quot;FROM LedgerEntry e JOIN e.account a &quot; +
+            &quot;WHERE e.status = 'POSTED' AND e.effectiveDate &lt;= :asOfDate &quot; +
+            &quot;GROUP BY a.accountCode, a.accountName, a.accountType, TRIM(e.currency) &quot; +
+            &quot;ORDER BY TRIM(e.currency), a.accountCode&quot;)
+    List&lt;Object[]&gt; generateTrialBalanceAsOf(@Param(&quot;asOfDate&quot;) ZonedDateTime asOfDate);
+
+    default List&lt;Object[]&gt; generateTrialBalance() {
+<span class="nc" id="L48">        return generateTrialBalanceAsOf(ZonedDateTime.now().plusYears(10));</span>
+    }
+
+    @Query(&quot;SELECT a.accountType, &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE 0 END), 0), &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE 0 END), 0) &quot; +
+            &quot;FROM LedgerEntry e JOIN e.account a &quot; +
+            &quot;WHERE e.status = 'POSTED' AND TRIM(e.currency) = :currency &quot; +
+            &quot;AND e.effectiveDate &gt;= :fromDate AND e.effectiveDate &lt;= :toDate &quot; +
+            &quot;GROUP BY a.accountType&quot;)
+    List&lt;Object[]&gt; getAccountTypeTotalsByPeriod(@Param(&quot;fromDate&quot;) ZonedDateTime fromDate,
+                                                @Param(&quot;toDate&quot;) ZonedDateTime toDate,
+                                                @Param(&quot;currency&quot;) String currency);
+
+    @Query(&quot;SELECT a.accountType, &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'DEBIT' THEN e.amount ELSE 0 END), 0), &quot; +
+            &quot;COALESCE(SUM(CASE WHEN e.entryType = 'CREDIT' THEN e.amount ELSE 0 END), 0) &quot; +
+            &quot;FROM LedgerEntry e JOIN e.account a &quot; +
+            &quot;WHERE e.status = 'POSTED' AND TRIM(e.currency) = :currency &quot; +
+            &quot;AND e.effectiveDate &lt;= :asOfDate &quot; +
+            &quot;GROUP BY a.accountType&quot;)
+    List&lt;Object[]&gt; getAccountTypeTotalsAsOf(@Param(&quot;asOfDate&quot;) ZonedDateTime asOfDate,
+                                            @Param(&quot;currency&quot;) String currency);
+
+    List&lt;LedgerEntry&gt; findByAccount_IdOrderByEffectiveDateDesc(UUID accountId);
+
+    List&lt;LedgerEntry&gt; findByAccount_IdOrderByEffectiveDateAsc(UUID accountId);
+
+    Page&lt;LedgerEntry&gt; findByAccount_IdAndEffectiveDateBetweenOrderByEffectiveDateAsc(
+            UUID accountId, ZonedDateTime from, ZonedDateTime to, Pageable pageable);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>
