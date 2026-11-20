@@ -46,6 +46,9 @@ public class ResilienceAndAuditService {
 
     // 1. Nightly & On-Demand Unrealised FX P&L Revaluation (Section A3.3)
     @Scheduled(cron = "0 55 23 * * *")
+    public void runNightlyScheduledFxRevaluation() {
+        runUnrealisedFxRevaluation(new BigDecimal("83.00000000"));
+    }
     @Transactional
     public Map<String, Object> runUnrealisedFxRevaluation(BigDecimal baselineUsdRate) {
         ExchangeRateSnapshot closing = exchangeRateService.getValidRate("USD", "INR");

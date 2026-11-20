@@ -147,7 +147,7 @@ class RubricComplianceTests {
         TransactionType[] types = TransactionType.values();
         Random random = new Random(42);
 
-        for (int i = 0; i < 500; i++) {
+        for (int i = 0; i < 1000; i++) {
             TransactionType chosen = types[random.nextInt(types.length)];
             BigDecimal amount = BigDecimal.valueOf(10 + random.nextInt(500));
             transactionEngineService.processTypedTransaction(chosen, amount, "STRESS_500");
