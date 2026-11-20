@@ -29,4 +29,4 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
       - name: Run Maven Test Suite
-        run: ./mvnw test
+        run: chmod +x mvnw && ./mvnw test
