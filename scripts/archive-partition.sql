@@ -1,0 +1,3 @@
+﻿-- Archive & detach an expired monthly partition (RBI 10-year tiered retention workflow)
+-- Step 1: COPY ledger_entries_2025_03 TO '/archive/ledger_entries_2025_03.csv' WITH CSV HEADER;
+-- Step 2: ALTER TABLE ledger_entries DETACH PARTITION ledger_entries_2025_03;
