@@ -5,6 +5,9 @@ import com.zetheta.demo.models.FeeRefundPolicy;
 import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.models.TransactionType;
 import com.zetheta.demo.repositories.AccountRepository;
+import com.zetheta.demo.repositories.LedgerEntryRepository;
+import com.zetheta.demo.validators.TransactionValidator;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,37 +20,47 @@ import java.util.*;
 public class TransactionEngineService {
 
     private final AccountRepository accountRepository;
+    private final LedgerEntryRepository entryRepository;
     private final LedgerService ledgerService;
     private final ExchangeRateService exchangeRateService;
+    private final TransactionValidator validator;
     private final JdbcTemplate jdbcTemplate;
 
+    private final BigDecimal defaultFeeRate;
+    private final BigDecimal defaultTaxRate;
+    private final BigDecimal defaultPartialRefundRatio;
+
     public TransactionEngineService(AccountRepository accountRepository,
+                                    LedgerEntryRepository entryRepository,
                                     LedgerService ledgerService,
                                     ExchangeRateService exchangeRateService,
-                                    JdbcTemplate jdbcTemplate) {
+                                    TransactionValidator validator,
+                                    JdbcTemplate jdbcTemplate,
+                                    @Value("${ledger.fees.default-rate:0.01}") BigDecimal defaultFeeRate,
+                                    @Value("${ledger.fees.tax-rate:0.005}") BigDecimal defaultTaxRate,
+                                    @Value("${ledger.refunds.default-partial-ratio:0.50}") BigDecimal defaultPartialRefundRatio) {
         this.accountRepository = accountRepository;
+        this.entryRepository = entryRepository;
         this.ledgerService = ledgerService;
         this.exchangeRateService = exchangeRateService;
+        this.validator = validator;
         this.jdbcTemplate = jdbcTemplate;
+        this.defaultFeeRate = defaultFeeRate;
+        this.defaultTaxRate = defaultTaxRate;
+        this.defaultPartialRefundRatio = defaultPartialRefundRatio;
     }
 
     @Transactional
     public Map<String, Object> processTypedTransaction(TransactionType type, BigDecimal amount, String createdBy) {
-        if (type == null) {
-            throw new IllegalArgumentException("TransactionType is required.");
-        }
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Amount must be greater than zero.");
-        }
-
-        String actor = (createdBy == null || createdBy.isBlank()) ? "TXN_ENGINE" : createdBy;
+        validator.validate(type, amount, createdBy);
+        String actor = createdBy.trim();
 
         if (type == TransactionType.FX_CONVERSION) {
             return exchangeRateService.convertUsdToInr(amount, actor);
         }
 
-        BigDecimal fee = amount.multiply(new BigDecimal("0.01")).setScale(4, RoundingMode.HALF_UP);
-        BigDecimal tax = amount.multiply(new BigDecimal("0.005")).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal fee = amount.multiply(defaultFeeRate).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal tax = amount.multiply(defaultTaxRate).setScale(4, RoundingMode.HALF_UP);
         BigDecimal netAfterFee = amount.subtract(fee);
         BigDecimal netAfterTax = amount.subtract(tax);
 
@@ -127,9 +140,9 @@ public class TransactionEngineService {
                 entries.add(buildEntry("1001", "CREDIT", amount, "INR", actor));
             }
             case REFUND_PARTIAL -> {
-                BigDecimal half = amount.divide(new BigDecimal("2"), 4, RoundingMode.HALF_UP);
-                entries.add(buildEntry("2002", "DEBIT", half, "INR", actor));
-                entries.add(buildEntry("1001", "CREDIT", half, "INR", actor));
+                BigDecimal partialAmt = amount.multiply(defaultPartialRefundRatio).setScale(4, RoundingMode.HALF_UP);
+                entries.add(buildEntry("2002", "DEBIT", partialAmt, "INR", actor));
+                entries.add(buildEntry("1001", "CREDIT", partialAmt, "INR", actor));
             }
             case CHARGEBACK -> {
                 entries.add(buildEntry("1010", "DEBIT", amount.add(fee), "INR", actor));
@@ -158,16 +171,29 @@ public class TransactionEngineService {
         return response;
     }
 
+    /**
+     * Backward-compatible signature: client-supplied originalAmount and originalFee are intentionally
+     * ignored and always derived authoritatively from persisted ledger_entries.
+     */
     @Transactional
     public Map<String, Object> processPartialRefund(UUID originalJournalId,
-                                                    BigDecimal originalAmount,
-                                                    BigDecimal originalFee,
+                                                    BigDecimal ignoredClientOriginalAmount,
+                                                    BigDecimal ignoredClientOriginalFee,
                                                     BigDecimal refundAmount,
                                                     FeeRefundPolicy feePolicy,
                                                     String idempotencyKey,
                                                     String createdBy) {
-        if (originalJournalId == null || refundAmount == null || originalAmount == null) {
-            throw new IllegalArgumentException("originalJournalId, originalAmount, and refundAmount are required.");
+        return processPartialRefund(originalJournalId, refundAmount, feePolicy, idempotencyKey, createdBy);
+    }
+
+    @Transactional
+    public Map<String, Object> processPartialRefund(UUID originalJournalId,
+                                                    BigDecimal refundAmount,
+                                                    FeeRefundPolicy feePolicy,
+                                                    String idempotencyKey,
+                                                    String createdBy) {
+        if (originalJournalId == null || refundAmount == null) {
+            throw new IllegalArgumentException("originalJournalId and refundAmount are required.");
         }
         if (refundAmount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("Refund amount must be greater than zero.");
@@ -176,6 +202,56 @@ public class TransactionEngineService {
             throw new IllegalArgumentException("Idempotency key is required for partial refunds.");
         }
 
+        // 1. Serialize all concurrent refund requests targeting the same originalJournalId
+        jdbcTemplate.queryForList("SELECT pg_advisory_xact_lock(hashtext(?))", "PARTIAL_REFUND:" + originalJournalId);
+
+        // 2. Verify original journal exists and is not itself a reversal or refund
+        List<LedgerEntry> originalEntries = entryRepository.findByJournalId(originalJournalId);
+        if (originalEntries.isEmpty()) {
+            throw new IllegalArgumentException("Original journal not found: " + originalJournalId);
+        }
+
+        Integer isReversalJournal = jdbcTemplate.queryForObject(
+                "SELECT (SELECT COUNT(*) FROM reversals WHERE reversal_journal_id = ?) + " +
+                        "(SELECT COUNT(*) FROM partial_refunds WHERE refund_journal_id = ?)",
+                Integer.class, originalJournalId, originalJournalId);
+        if (isReversalJournal != null && isReversalJournal > 0) {
+            throw new IllegalArgumentException("Cannot refund a journal that is itself a reversal or refund: " + originalJournalId);
+        }
+
+        Integer alreadyFullyReversed = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM reversals WHERE original_journal_id = ?",
+                Integer.class, originalJournalId);
+        if (alreadyFullyReversed != null && alreadyFullyReversed > 0) {
+            throw new IllegalStateException("Original journal was already fully reversed: " + originalJournalId);
+        }
+
+        // 3. Derive authoritative original principal and fee strictly from the ledger
+        BigDecimal derivedFee = BigDecimal.ZERO;
+        BigDecimal derivedMerchantPrincipal = BigDecimal.ZERO;
+        BigDecimal totalDebits = BigDecimal.ZERO;
+
+        for (LedgerEntry e : originalEntries) {
+            String code = e.getAccount().getAccountCode();
+            if ("DEBIT".equals(e.getEntryType())) {
+                totalDebits = totalDebits.add(e.getAmount());
+            }
+            if ("4001".equals(code) && "CREDIT".equals(e.getEntryType())) {
+                derivedFee = derivedFee.add(e.getAmount());
+            }
+            if ("2002".equals(code) && "CREDIT".equals(e.getEntryType())) {
+                derivedMerchantPrincipal = derivedMerchantPrincipal.add(e.getAmount());
+            }
+        }
+
+        BigDecimal derivedOriginalAmount = derivedMerchantPrincipal.compareTo(BigDecimal.ZERO) > 0
+                ? derivedMerchantPrincipal
+                : totalDebits.subtract(derivedFee);
+        if (derivedOriginalAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            derivedOriginalAmount = totalDebits;
+        }
+
+        // 4. Duplicate idempotency check under advisory lock
         Integer existing = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM partial_refunds WHERE original_journal_id = ? AND idempotency_key = ?",
                 Integer.class, originalJournalId, idempotencyKey);
@@ -183,30 +259,35 @@ public class TransactionEngineService {
             throw new IllegalStateException("Duplicate partial refund rejected for idempotency key: " + idempotencyKey);
         }
 
+        // 5. Enforce cumulative refund cap (never exceed original principal)
         BigDecimal alreadyRefunded = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(SUM(refund_amount), 0) FROM partial_refunds WHERE original_journal_id = ?",
                 BigDecimal.class, originalJournalId);
-        if (alreadyRefunded == null) {
-            alreadyRefunded = BigDecimal.ZERO;
-        }
+        BigDecimal alreadyRefundedFee = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(fee_refunded), 0) FROM partial_refunds WHERE original_journal_id = ?",
+                BigDecimal.class, originalJournalId);
+        if (alreadyRefunded == null) alreadyRefunded = BigDecimal.ZERO;
+        if (alreadyRefundedFee == null) alreadyRefundedFee = BigDecimal.ZERO;
 
-        if (alreadyRefunded.add(refundAmount).compareTo(originalAmount) > 0) {
+        if (alreadyRefunded.add(refundAmount).compareTo(derivedOriginalAmount) > 0) {
             throw new IllegalArgumentException(
-                    "Refund exceeds original amount. Original: " + originalAmount
+                    "Refund exceeds original amount. Original: " + derivedOriginalAmount
                             + ", Already refunded: " + alreadyRefunded
                             + ", Requested: " + refundAmount);
         }
 
-        BigDecimal safeFee = (originalFee == null) ? BigDecimal.ZERO : originalFee;
+        // 6. Calculate fee refund according to policy (capped at remaining unrefunded fee)
         FeeRefundPolicy policy = (feePolicy == null) ? FeeRefundPolicy.NONE : feePolicy;
+        BigDecimal remainingFee = derivedFee.subtract(alreadyRefundedFee).max(BigDecimal.ZERO);
         BigDecimal feeToRefund = switch (policy) {
-            case PROPORTIONAL -> safeFee.multiply(refundAmount)
-                    .divide(originalAmount, 4, RoundingMode.HALF_UP);
-            case FULL -> safeFee;
+            case PROPORTIONAL -> derivedFee.multiply(refundAmount)
+                    .divide(derivedOriginalAmount, 4, RoundingMode.HALF_UP)
+                    .min(remainingFee);
+            case FULL -> remainingFee;
             case NONE -> BigDecimal.ZERO;
         };
 
-        String actor = (createdBy == null || createdBy.isBlank()) ? "REFUND_ENGINE" : createdBy;
+        String actor = (createdBy == null || createdBy.isBlank()) ? "REFUND_ENGINE" : createdBy.trim();
         List<LedgerEntry> entries = new ArrayList<>();
         entries.add(buildEntry("2002", "DEBIT", refundAmount, "INR", actor));
         if (feeToRefund.compareTo(BigDecimal.ZERO) > 0) {
@@ -218,17 +299,19 @@ public class TransactionEngineService {
 
         jdbcTemplate.update(
                 "INSERT INTO partial_refunds (original_journal_id, refund_journal_id, idempotency_key, original_amount, refund_amount, fee_refunded, fee_policy) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                originalJournalId, refundJournalId, idempotencyKey, originalAmount, refundAmount, feeToRefund, policy.name());
+                originalJournalId, refundJournalId, idempotencyKey, derivedOriginalAmount, refundAmount, feeToRefund, policy.name());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "PARTIALLY_REFUNDED");
         result.put("originalJournalId", originalJournalId.toString());
         result.put("refundJournalId", refundJournalId.toString());
+        result.put("derivedOriginalAmount", derivedOriginalAmount);
+        result.put("derivedOriginalFee", derivedFee);
         result.put("refundAmount", refundAmount);
         result.put("feePolicy", policy.name());
         result.put("feeRefunded", feeToRefund);
         result.put("totalRefundedSoFar", alreadyRefunded.add(refundAmount));
-        result.put("remainingRefundable", originalAmount.subtract(alreadyRefunded.add(refundAmount)));
+        result.put("remainingRefundable", derivedOriginalAmount.subtract(alreadyRefunded.add(refundAmount)));
         return result;
     }
 

@@ -110,64 +110,84 @@ public class ExchangeRateService {
 
     public Map&lt;String, Object&gt; getCurrencyExposureReport() {
 <span class="fc" id="L112">        List&lt;Account&gt; allAccounts = accountRepository.findAll();</span>
-<span class="fc" id="L113">        Map&lt;String, BigDecimal&gt; totalsByCurrency = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L113">        Map&lt;String, BigDecimal&gt; assetsByCurrency = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L114">        Map&lt;String, BigDecimal&gt; liabilitiesByCurrency = new LinkedHashMap&lt;&gt;();</span>
 
-<span class="fc bfc" id="L115" title="All 2 branches covered.">        for (Account acc : allAccounts) {</span>
-<span class="fc" id="L116">            String curr = acc.getCurrency().trim();</span>
-<span class="fc" id="L117">            BigDecimal bal = entryRepository.calculateBalance(acc.getId());</span>
-<span class="fc" id="L118">            totalsByCurrency.merge(curr, bal, BigDecimal::add);</span>
-<span class="fc" id="L119">        }</span>
+        // Net FX position = Assets - Liabilities per currency (excludes internal FX clearing transit 1005 and Equity/P&amp;L)
+<span class="fc bfc" id="L117" title="All 2 branches covered.">        for (Account acc : allAccounts) {</span>
+<span class="fc" id="L118">            String type = acc.getAccountType();</span>
+<span class="fc bfc" id="L119" title="All 4 branches covered.">            if (!&quot;Asset&quot;.equalsIgnoreCase(type) &amp;&amp; !&quot;Liability&quot;.equalsIgnoreCase(type)) {</span>
+<span class="fc" id="L120">                continue;</span>
+            }
+<span class="fc bfc" id="L122" title="All 2 branches covered.">            if (&quot;1005&quot;.equals(acc.getAccountCode())) {</span>
+<span class="fc" id="L123">                continue;</span>
+            }
+<span class="fc" id="L125">            String curr = acc.getCurrency().trim().toUpperCase();</span>
+<span class="fc" id="L126">            BigDecimal bal = entryRepository.calculateBalanceByCurrency(acc.getId(), curr);</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">            if (&quot;Asset&quot;.equalsIgnoreCase(type)) {</span>
+<span class="fc" id="L128">                assetsByCurrency.merge(curr, bal, BigDecimal::add);</span>
+<span class="fc" id="L129">                liabilitiesByCurrency.putIfAbsent(curr, BigDecimal.ZERO);</span>
+            } else {
+<span class="fc" id="L131">                liabilitiesByCurrency.merge(curr, bal, BigDecimal::add);</span>
+<span class="fc" id="L132">                assetsByCurrency.putIfAbsent(curr, BigDecimal.ZERO);</span>
+            }
+<span class="fc" id="L134">        }</span>
 
-<span class="fc" id="L121">        List&lt;Object&gt; exposures = new ArrayList&lt;&gt;();</span>
-<span class="fc" id="L122">        BigDecimal grandTotalInr = BigDecimal.ZERO;</span>
+<span class="fc" id="L136">        List&lt;Object&gt; exposures = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L137">        BigDecimal grandTotalInr = BigDecimal.ZERO;</span>
 
-<span class="fc bfc" id="L124" title="All 2 branches covered.">        for (Map.Entry&lt;String, BigDecimal&gt; item : totalsByCurrency.entrySet()) {</span>
-<span class="fc" id="L125">            String currency = item.getKey();</span>
-<span class="fc" id="L126">            BigDecimal balance = item.getValue();</span>
-<span class="fc" id="L127">            BigDecimal inrEquivalent = balance;</span>
-<span class="fc" id="L128">            BigDecimal appliedRate = BigDecimal.ONE;</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">        for (String currency : assetsByCurrency.keySet()) {</span>
+<span class="fc" id="L140">            BigDecimal assets = assetsByCurrency.getOrDefault(currency, BigDecimal.ZERO);</span>
+<span class="fc" id="L141">            BigDecimal liabilities = liabilitiesByCurrency.getOrDefault(currency, BigDecimal.ZERO);</span>
+<span class="fc" id="L142">            BigDecimal netExposure = assets.subtract(liabilities);</span>
+<span class="fc" id="L143">            BigDecimal inrEquivalent = netExposure;</span>
+<span class="fc" id="L144">            BigDecimal appliedRate = BigDecimal.ONE;</span>
 
-<span class="fc bfc" id="L130" title="All 2 branches covered.">            if (!&quot;INR&quot;.equals(currency)) {</span>
-<span class="fc" id="L131">                Optional&lt;ExchangeRateSnapshot&gt; snap = rateRepository</span>
-<span class="fc" id="L132">                        .findTopByBaseCurrencyAndQuoteCurrencyOrderByCapturedAtDesc(currency, &quot;INR&quot;);</span>
-<span class="pc bpc" id="L133" title="1 of 2 branches missed.">                if (snap.isPresent()) {</span>
-<span class="fc" id="L134">                    appliedRate = snap.get().getRate();</span>
-<span class="fc" id="L135">                    inrEquivalent = balance.multiply(appliedRate).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc bfc" id="L146" title="All 2 branches covered.">            if (!&quot;INR&quot;.equals(currency)) {</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">                if (netExposure.compareTo(BigDecimal.ZERO) != 0) {</span>
+<span class="fc" id="L148">                    ExchangeRateSnapshot validSnap = getValidRate(currency, &quot;INR&quot;);</span>
+<span class="fc" id="L149">                    appliedRate = validSnap.getRate();</span>
+<span class="fc" id="L150">                    inrEquivalent = netExposure.multiply(appliedRate).setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L151">                } else {</span>
+<span class="fc" id="L152">                    appliedRate = BigDecimal.ZERO;</span>
+<span class="fc" id="L153">                    inrEquivalent = BigDecimal.ZERO;</span>
                 }
             }
-<span class="fc" id="L138">            grandTotalInr = grandTotalInr.add(inrEquivalent);</span>
+<span class="fc" id="L156">            grandTotalInr = grandTotalInr.add(inrEquivalent);</span>
 
-<span class="fc" id="L140">            Map&lt;String, Object&gt; row = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L141">            row.put(&quot;currency&quot;, currency);</span>
-<span class="fc" id="L142">            row.put(&quot;netBalance&quot;, balance);</span>
-<span class="fc" id="L143">            row.put(&quot;rateToInr&quot;, appliedRate);</span>
-<span class="fc" id="L144">            row.put(&quot;inrEquivalent&quot;, inrEquivalent);</span>
-<span class="fc" id="L145">            exposures.add(row);</span>
-<span class="fc" id="L146">        }</span>
+<span class="fc" id="L158">            Map&lt;String, Object&gt; row = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L159">            row.put(&quot;currency&quot;, currency);</span>
+<span class="fc" id="L160">            row.put(&quot;assets&quot;, assets);</span>
+<span class="fc" id="L161">            row.put(&quot;liabilities&quot;, liabilities);</span>
+<span class="fc" id="L162">            row.put(&quot;netExposure&quot;, netExposure);</span>
+<span class="fc" id="L163">            row.put(&quot;rateToInr&quot;, appliedRate);</span>
+<span class="fc" id="L164">            row.put(&quot;inrEquivalent&quot;, inrEquivalent);</span>
+<span class="fc" id="L165">            exposures.add(row);</span>
+<span class="fc" id="L166">        }</span>
 
-<span class="fc" id="L148">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L149">        report.put(&quot;report&quot;, &quot;Currency Exposure Report&quot;);</span>
-<span class="fc" id="L150">        report.put(&quot;exposures&quot;, exposures);</span>
-<span class="fc" id="L151">        report.put(&quot;totalExposureInr&quot;, grandTotalInr);</span>
-<span class="fc" id="L152">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
-<span class="fc" id="L153">        return report;</span>
+<span class="fc" id="L168">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L169">        report.put(&quot;report&quot;, &quot;Currency Exposure Report&quot;);</span>
+<span class="fc" id="L170">        report.put(&quot;exposures&quot;, exposures);</span>
+<span class="fc" id="L171">        report.put(&quot;totalExposureInr&quot;, grandTotalInr);</span>
+<span class="fc" id="L172">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L173">        return report;</span>
     }
 
     private Account findByCode(String code) {
-<span class="fc" id="L157">        return accountRepository.findAll().stream()</span>
-<span class="fc" id="L158">                .filter(a -&gt; code.equals(a.getAccountCode()))</span>
-<span class="fc" id="L159">                .findFirst()</span>
-<span class="pc" id="L160">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + code));</span>
+<span class="fc" id="L177">        return accountRepository.findAll().stream()</span>
+<span class="fc" id="L178">                .filter(a -&gt; code.equals(a.getAccountCode()))</span>
+<span class="fc" id="L179">                .findFirst()</span>
+<span class="pc" id="L180">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + code));</span>
     }
 
     private LedgerEntry buildEntry(Account account, String type, BigDecimal amount, String currency, String actor) {
-<span class="fc" id="L164">        LedgerEntry e = new LedgerEntry();</span>
-<span class="fc" id="L165">        e.setAccount(account);</span>
-<span class="fc" id="L166">        e.setEntryType(type);</span>
-<span class="fc" id="L167">        e.setAmount(amount);</span>
-<span class="fc" id="L168">        e.setCurrency(currency);</span>
-<span class="fc" id="L169">        e.setCreatedBy(actor);</span>
-<span class="fc" id="L170">        return e;</span>
+<span class="fc" id="L184">        LedgerEntry e = new LedgerEntry();</span>
+<span class="fc" id="L185">        e.setAccount(account);</span>
+<span class="fc" id="L186">        e.setEntryType(type);</span>
+<span class="fc" id="L187">        e.setAmount(amount);</span>
+<span class="fc" id="L188">        e.setCurrency(currency);</span>
+<span class="fc" id="L189">        e.setCreatedBy(actor);</span>
+<span class="fc" id="L190">        return e;</span>
     }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

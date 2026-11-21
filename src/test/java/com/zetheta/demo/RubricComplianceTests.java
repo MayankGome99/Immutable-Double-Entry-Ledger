@@ -8,8 +8,11 @@ import com.zetheta.demo.repositories.AccountRepository;
 import com.zetheta.demo.services.ExchangeRateService;
 import com.zetheta.demo.services.LedgerService;
 import com.zetheta.demo.services.TransactionEngineService;
+import com.zetheta.demo.validators.TransactionValidator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.UncategorizedSQLException;
@@ -20,6 +23,11 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -33,6 +41,9 @@ class RubricComplianceTests {
 
     @Autowired
     private TransactionEngineService transactionEngineService;
+
+    @Autowired
+    private TransactionValidator transactionValidator;
 
     @Autowired
     private ExchangeRateService exchangeRateService;
@@ -79,6 +90,33 @@ class RubricComplianceTests {
         assertTrialBalanceIsZero();
     }
 
+    @ParameterizedTest
+    @EnumSource(TransactionType.class)
+    void testEachTransactionTypeHappyValidationAndEdgeCase(TransactionType type) {
+        exchangeRateService.saveRateSnapshot("USD", "INR", new BigDecimal("83.42000000"), "RBI_REFERENCE", 60);
+
+        // 1. Happy path
+        Map<String, Object> happy = transactionEngineService.processTypedTransaction(
+                type, new BigDecimal("100.00"), "PARAM_HAPPY");
+        assertNotNull(happy);
+
+        // 2. Validation error: zero amount, over-max amount, and blank actor must fail
+        assertThrows(IllegalArgumentException.class, () ->
+                transactionEngineService.processTypedTransaction(type, BigDecimal.ZERO, "PARAM_ERR"));
+        assertThrows(IllegalArgumentException.class, () ->
+                transactionEngineService.processTypedTransaction(type, new BigDecimal("99999999.00"), "PARAM_ERR"));
+        assertThrows(IllegalArgumentException.class, () ->
+                transactionEngineService.processTypedTransaction(type, new BigDecimal("100.00"), "  "));
+
+        // 3. Edge case: exact minimum allowed amount succeeds
+        BigDecimal minAmount = transactionValidator.getMinAmount(type);
+        Map<String, Object> edge = transactionEngineService.processTypedTransaction(
+                type, minAmount, "PARAM_EDGE");
+        assertNotNull(edge);
+
+        assertTrialBalanceIsZero();
+    }
+
     @Test
     void testStaleExchangeRateIsRejected() {
         exchangeRateService.saveRateSnapshot("EUR", "INR", new BigDecimal("90.25000000"), "STALE_TEST", -15);
@@ -104,22 +142,25 @@ class RubricComplianceTests {
 
     @Test
     void testPartialRefundFeePolicies() {
-        UUID orig1 = UUID.randomUUID();
+        // Create 3 real MERCHANT_PAYMENT_QR journals of INR 1000.00 (1% configured fee = INR 10.00)
+        UUID orig1 = UUID.fromString((String) transactionEngineService.processTypedTransaction(
+                TransactionType.MERCHANT_PAYMENT_QR, new BigDecimal("1000.00"), "MERCHANT_1").get("journalId"));
+        // Pass bogus client originalAmount/originalFee to verify they are ignored in favor of DB values
         Map<String, Object> prop = transactionEngineService.processPartialRefund(
-                orig1, new BigDecimal("1000.00"), new BigDecimal("20.00"),
+                orig1, new BigDecimal("999999.00"), new BigDecimal("9999.00"),
                 new BigDecimal("500.00"), FeeRefundPolicy.PROPORTIONAL, "idem-" + UUID.randomUUID(), "REFUND_TEST");
-        assertEquals(0, new BigDecimal("10.0000").compareTo((BigDecimal) prop.get("feeRefunded")));
+        assertEquals(0, new BigDecimal("5.0000").compareTo((BigDecimal) prop.get("feeRefunded")));
 
-        UUID orig2 = UUID.randomUUID();
+        UUID orig2 = UUID.fromString((String) transactionEngineService.processTypedTransaction(
+                TransactionType.MERCHANT_PAYMENT_QR, new BigDecimal("1000.00"), "MERCHANT_2").get("journalId"));
         Map<String, Object> full = transactionEngineService.processPartialRefund(
-                orig2, new BigDecimal("1000.00"), new BigDecimal("20.00"),
-                new BigDecimal("500.00"), FeeRefundPolicy.FULL, "idem-" + UUID.randomUUID(), "REFUND_TEST");
-        assertEquals(0, new BigDecimal("20.0000").compareTo((BigDecimal) full.get("feeRefunded")));
+                orig2, new BigDecimal("500.00"), FeeRefundPolicy.FULL, "idem-" + UUID.randomUUID(), "REFUND_TEST");
+        assertEquals(0, new BigDecimal("10.0000").compareTo((BigDecimal) full.get("feeRefunded")));
 
-        UUID orig3 = UUID.randomUUID();
+        UUID orig3 = UUID.fromString((String) transactionEngineService.processTypedTransaction(
+                TransactionType.MERCHANT_PAYMENT_QR, new BigDecimal("1000.00"), "MERCHANT_3").get("journalId"));
         Map<String, Object> none = transactionEngineService.processPartialRefund(
-                orig3, new BigDecimal("1000.00"), new BigDecimal("20.00"),
-                new BigDecimal("500.00"), FeeRefundPolicy.NONE, "idem-" + UUID.randomUUID(), "REFUND_TEST");
+                orig3, new BigDecimal("500.00"), FeeRefundPolicy.NONE, "idem-" + UUID.randomUUID(), "REFUND_TEST");
         assertEquals(0, BigDecimal.ZERO.compareTo((BigDecimal) none.get("feeRefunded")));
 
         assertTrialBalanceIsZero();
@@ -127,22 +168,79 @@ class RubricComplianceTests {
 
     @Test
     void testOverRefundAndDuplicateIdempotencyBlocked() {
-        UUID origId = UUID.randomUUID();
+        UUID origId = UUID.fromString((String) transactionEngineService.processTypedTransaction(
+                TransactionType.MERCHANT_PAYMENT_QR, new BigDecimal("1000.00"), "FRAUD_ORIG").get("journalId"));
         String idemKey = "dup-key-" + UUID.randomUUID();
 
-        transactionEngineService.processPartialRefund(
-                origId, new BigDecimal("1000.00"), new BigDecimal("20.00"),
-                new BigDecimal("600.00"), FeeRefundPolicy.NONE, idemKey, "FRAUD_TEST");
+        Map<String, Object> firstRefund = transactionEngineService.processPartialRefund(
+                origId, new BigDecimal("600.00"), FeeRefundPolicy.NONE, idemKey, "FRAUD_TEST");
+        UUID refundJournalId = UUID.fromString((String) firstRefund.get("refundJournalId"));
 
+        // Duplicate idempotency key blocked
         assertThrows(IllegalStateException.class, () ->
                 transactionEngineService.processPartialRefund(
-                        origId, new BigDecimal("1000.00"), new BigDecimal("20.00"),
-                        new BigDecimal("100.00"), FeeRefundPolicy.NONE, idemKey, "FRAUD_TEST"));
+                        origId, new BigDecimal("100.00"), FeeRefundPolicy.NONE, idemKey, "FRAUD_TEST"));
 
+        // Cumulative over-refund blocked (600 + 500 > 1000)
         assertThrows(IllegalArgumentException.class, () ->
                 transactionEngineService.processPartialRefund(
-                        origId, new BigDecimal("1000.00"), new BigDecimal("20.00"),
-                        new BigDecimal("500.00"), FeeRefundPolicy.NONE, "new-key-" + UUID.randomUUID(), "FRAUD_TEST"));
+                        origId, new BigDecimal("500.00"), FeeRefundPolicy.NONE, "new-key-" + UUID.randomUUID(), "FRAUD_TEST"));
+
+        // Non-existent original journal blocked
+        assertThrows(IllegalArgumentException.class, () ->
+                transactionEngineService.processPartialRefund(
+                        UUID.randomUUID(), new BigDecimal("100.00"), FeeRefundPolicy.NONE, "missing-" + UUID.randomUUID(), "FRAUD_TEST"));
+
+        // Refunding a refund journal itself blocked
+        assertThrows(IllegalArgumentException.class, () ->
+                transactionEngineService.processPartialRefund(
+                        refundJournalId, new BigDecimal("100.00"), FeeRefundPolicy.NONE, "nested-" + UUID.randomUUID(), "FRAUD_TEST"));
+    }
+
+    @Test
+    void test10ConcurrentPartialRefundsNeverExceedOriginal() throws InterruptedException {
+        UUID origId = UUID.fromString((String) transactionEngineService.processTypedTransaction(
+                TransactionType.MERCHANT_PAYMENT_QR, new BigDecimal("1000.00"), "CONC_ORIG").get("journalId"));
+
+        int threads = 10;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        AtomicInteger succeeded = new AtomicInteger(0);
+        AtomicInteger failed = new AtomicInteger(0);
+
+        for (int i = 0; i < threads; i++) {
+            final int idx = i;
+            executor.submit(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    transactionEngineService.processPartialRefund(
+                            origId, new BigDecimal("200.00"), FeeRefundPolicy.PROPORTIONAL,
+                            "conc-refund-" + origId + "-" + idx, "CONC_REFUND");
+                    succeeded.incrementAndGet();
+                } catch (Exception ex) {
+                    failed.incrementAndGet();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+        assertTrue(done.await(30, TimeUnit.SECONDS));
+        executor.shutdown();
+
+        BigDecimal totalRefunded = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(refund_amount), 0) FROM partial_refunds WHERE original_journal_id = ?",
+                BigDecimal.class, origId);
+
+        assertEquals(5, succeeded.get(), "Exactly 5 x INR 200 refunds should succeed for INR 1000 original");
+        assertEquals(5, failed.get(), "Remaining 5 concurrent refunds must be rejected");
+        assertEquals(0, new BigDecimal("1000.0000").compareTo(totalRefunded), "Total refunded must never exceed original");
+        assertTrialBalanceIsZero();
     }
 
     @Test
@@ -176,19 +274,16 @@ class RubricComplianceTests {
 
     @Test
     void testImmutabilityTriggerBlocksUpdate() {
-        // Post a transaction to create a POSTED entry
         UUID journalId = ledgerService.postTransaction(Arrays.asList(
                 entry("1001", "DEBIT", "100.00", "INR"),
                 entry("2001", "CREDIT", "100.00", "INR")
         ));
 
-        // Get the entry ID of the posted row
         UUID entryId = jdbcTemplate.queryForObject(
                 "SELECT entry_id FROM ledger_entries WHERE journal_id = ? LIMIT 1",
                 UUID.class, journalId);
         assertNotNull(entryId);
 
-        // Attempt to UPDATE the POSTED row — the trigger must block this
         UncategorizedSQLException ex = assertThrows(
                 UncategorizedSQLException.class,
                 () -> jdbcTemplate.update(
@@ -200,13 +295,11 @@ class RubricComplianceTests {
 
     @Test
     void testAuditTrailDetectsTamper() {
-        // Post a transaction
         ledgerService.postTransaction(Arrays.asList(
                 entry("1001", "DEBIT", "200.00", "INR"),
                 entry("2001", "CREDIT", "200.00", "INR")
         ));
 
-        // Verify audit trail passes on clean data
         String result = ledgerService.verifyAuditTrail();
         assertTrue(result.contains("AUDIT PASSED"), "Audit should pass on clean data: " + result);
     }

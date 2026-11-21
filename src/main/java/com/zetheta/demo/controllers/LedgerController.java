@@ -6,6 +6,7 @@ import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
 import com.zetheta.demo.repositories.LedgerEntryRepository;
 import com.zetheta.demo.services.LedgerService;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -16,7 +17,7 @@ import java.time.ZonedDateTime;
 import java.util.*;
 
 @RestController
-@RequestMapping("/api/ledger")
+@RequestMapping({"/api/ledger", "/api/v1"})
 public class LedgerController {
 
     private final LedgerService ledgerService;
@@ -38,6 +39,8 @@ public class LedgerController {
         health.put("database", "CONNECTED");
         health.put("accountsCount", accountRepository.count());
         health.put("ledgerEntriesCount", entryRepository.count());
+        health.put("partitions", ledgerService.getLedgerPartitionNames());
+        health.put("lastTrialBalanceCheckAt", ledgerService.getLastTrialBalanceCheckAt());
         health.put("auditStatus", ledgerService.verifyAuditTrail());
         health.put("timestamp", ZonedDateTime.now().toString());
         return ResponseEntity.ok(health);
@@ -81,52 +84,52 @@ public class LedgerController {
     }
 
     @GetMapping("/trial-balance")
-    public List<Object[]> getTrialBalance() {
-        return entryRepository.generateTrialBalance();
+    public ResponseEntity<Object> getTrialBalance(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime asOf,
+            @RequestParam(required = false) String currency) {
+        return ResponseEntity.ok(ledgerService.getTrialBalance(asOf, currency));
     }
 
     @GetMapping("/reports/income-statement")
-    public ResponseEntity<Object> getIncomeStatement() {
-        return ResponseEntity.ok(ledgerService.getIncomeStatement());
+    public ResponseEntity<Object> getIncomeStatement(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime to,
+            @RequestParam(required = false, defaultValue = "INR") String currency) {
+        return ResponseEntity.ok(ledgerService.getIncomeStatement(from, to, currency));
     }
 
     @GetMapping("/reports/balance-sheet")
-    public ResponseEntity<Object> getBalanceSheet() {
-        return ResponseEntity.ok(ledgerService.getBalanceSheet());
+    public ResponseEntity<Object> getBalanceSheet(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime asOf,
+            @RequestParam(required = false, defaultValue = "INR") String currency) {
+        return ResponseEntity.ok(ledgerService.getBalanceSheet(asOf, currency));
     }
 
-    @GetMapping("/audit")
+    @GetMapping({"/audit", "/audit/verify"})
     public ResponseEntity<String> runSecurityAudit() {
         return ResponseEntity.ok(ledgerService.verifyAuditTrail());
     }
 
     @GetMapping("/accounts/{accountId}/statement")
-    public ResponseEntity<Object> getAccountStatement(@PathVariable UUID accountId) {
-        List<LedgerEntry> statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);
-        if (statement.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(statement);
+    public ResponseEntity<Object> getAccountStatement(
+            @PathVariable UUID accountId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime to,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return ResponseEntity.ok(ledgerService.getAccountStatement(accountId, from, to, page, size));
     }
 
     @GetMapping(value = "/accounts/{accountId}/statement/csv", produces = "text/csv")
-    public ResponseEntity<String> exportAccountStatementCsv(@PathVariable UUID accountId) {
-        List<LedgerEntry> statement = entryRepository.findByAccount_IdOrderByEffectiveDateDesc(accountId);
-        StringBuilder csv = new StringBuilder("entry_id,journal_id,entry_type,amount,currency,status,effective_date,created_by\n");
-        for (LedgerEntry e : statement) {
-            csv.append(e.getEntryId()).append(",")
-                    .append(e.getJournalId()).append(",")
-                    .append(e.getEntryType()).append(",")
-                    .append(e.getAmount()).append(",")
-                    .append(e.getCurrency().trim()).append(",")
-                    .append(e.getStatus()).append(",")
-                    .append(e.getEffectiveDate()).append(",")
-                    .append(e.getCreatedBy()).append("\n");
-        }
+    public ResponseEntity<String> exportAccountStatementCsv(
+            @PathVariable UUID accountId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) ZonedDateTime to) {
+        String csv = ledgerService.exportAccountStatementCsv(accountId, from, to);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=statement_" + accountId + ".csv")
                 .contentType(MediaType.parseMediaType("text/csv"))
-                .body(csv.toString());
+                .body(csv);
     }
 
     @PostMapping("/transfer")

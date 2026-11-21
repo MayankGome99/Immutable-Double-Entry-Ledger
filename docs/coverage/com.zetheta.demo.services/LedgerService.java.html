@@ -22,421 +22,584 @@ import java.util.*;
 public class LedgerService {
     private static final long CHAIN_LOCK_KEY = 424242L;
 
+<span class="fc" id="L25">    public record StatementRow(</span>
+            String entryId,
+            String journalId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            String status,
+            String effectiveDate,
+            String createdBy,
+            BigDecimal runningBalance
+    ) {}
+
     private final LedgerEntryRepository repository;
     private final AccountRepository accountRepository;
     private final JdbcTemplate jdbcTemplate;
+    private volatile Instant lastTrialBalanceCheckAt;
 
     public LedgerService(LedgerEntryRepository repository,
                          AccountRepository accountRepository,
-<span class="fc" id="L31">                         JdbcTemplate jdbcTemplate) {</span>
-<span class="fc" id="L32">        this.repository = repository;</span>
-<span class="fc" id="L33">        this.accountRepository = accountRepository;</span>
-<span class="fc" id="L34">        this.jdbcTemplate = jdbcTemplate;</span>
-<span class="fc" id="L35">    }</span>
+<span class="fc" id="L44">                         JdbcTemplate jdbcTemplate) {</span>
+<span class="fc" id="L45">        this.repository = repository;</span>
+<span class="fc" id="L46">        this.accountRepository = accountRepository;</span>
+<span class="fc" id="L47">        this.jdbcTemplate = jdbcTemplate;</span>
+<span class="fc" id="L48">    }</span>
 
     @Transactional
     public UUID postTransaction(List&lt;LedgerEntry&gt; entries) {
-<span class="pc bpc" id="L39" title="2 of 4 branches missed.">        if (entries == null || entries.size() &lt; 2) {</span>
-<span class="nc" id="L40">            throw new IllegalArgumentException(&quot;Transaction failed: A journal entry requires at least 2 ledger lines.&quot;);</span>
+<span class="pc bpc" id="L52" title="2 of 4 branches missed.">        if (entries == null || entries.size() &lt; 2) {</span>
+<span class="nc" id="L53">            throw new IllegalArgumentException(&quot;Transaction failed: A journal entry requires at least 2 ledger lines.&quot;);</span>
         }
 
         // 1. Validate amounts, entry types, and per-currency debit = credit
-<span class="fc" id="L44">        Map&lt;String, BigDecimal&gt; debitsByCurrency = new HashMap&lt;&gt;();</span>
-<span class="fc" id="L45">        Map&lt;String, BigDecimal&gt; creditsByCurrency = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L57">        Map&lt;String, BigDecimal&gt; debitsByCurrency = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L58">        Map&lt;String, BigDecimal&gt; creditsByCurrency = new HashMap&lt;&gt;();</span>
 
-<span class="fc bfc" id="L47" title="All 2 branches covered.">        for (LedgerEntry entry : entries) {</span>
-<span class="pc bpc" id="L48" title="2 of 4 branches missed.">            if (entry.getAccount() == null || entry.getAccount().getId() == null) {</span>
-<span class="nc" id="L49">                throw new IllegalArgumentException(&quot;Transaction failed: Account is required on every entry.&quot;);</span>
+<span class="fc bfc" id="L60" title="All 2 branches covered.">        for (LedgerEntry entry : entries) {</span>
+<span class="pc bpc" id="L61" title="2 of 4 branches missed.">            if (entry.getAccount() == null || entry.getAccount().getId() == null) {</span>
+<span class="nc" id="L62">                throw new IllegalArgumentException(&quot;Transaction failed: Account is required on every entry.&quot;);</span>
             }
-<span class="pc bpc" id="L51" title="2 of 4 branches missed.">            if (entry.getAmount() == null || entry.getAmount().compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
-<span class="nc" id="L52">                throw new IllegalArgumentException(&quot;Transaction failed: Entry amount must be strictly greater than zero.&quot;);</span>
+<span class="pc bpc" id="L64" title="2 of 4 branches missed.">            if (entry.getAmount() == null || entry.getAmount().compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="nc" id="L65">                throw new IllegalArgumentException(&quot;Transaction failed: Entry amount must be strictly greater than zero.&quot;);</span>
             }
-            // Normalize scale to match PostgreSQL NUMERIC(19,4)
-<span class="fc" id="L55">            BigDecimal scaledAmount = entry.getAmount().setScale(4, RoundingMode.HALF_UP);</span>
-<span class="fc" id="L56">            entry.setAmount(scaledAmount);</span>
+<span class="fc" id="L67">            BigDecimal scaledAmount = entry.getAmount().setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L68">            entry.setAmount(scaledAmount);</span>
 
-<span class="pc bpc" id="L58" title="2 of 4 branches missed.">            String curr = (entry.getCurrency() == null || entry.getCurrency().isBlank())</span>
-<span class="pc" id="L59">                    ? &quot;INR&quot; : entry.getCurrency().trim().toUpperCase();</span>
-<span class="fc" id="L60">            entry.setCurrency(curr);</span>
+<span class="pc bpc" id="L70" title="2 of 4 branches missed.">            String curr = (entry.getCurrency() == null || entry.getCurrency().isBlank())</span>
+<span class="pc" id="L71">                    ? &quot;INR&quot; : entry.getCurrency().trim().toUpperCase();</span>
+<span class="fc" id="L72">            entry.setCurrency(curr);</span>
 
-<span class="pc bpc" id="L62" title="1 of 3 branches missed.">            switch (entry.getEntryType()) {</span>
-<span class="fc" id="L63">                case &quot;DEBIT&quot; -&gt; debitsByCurrency.merge(curr, scaledAmount, BigDecimal::add);</span>
-<span class="fc" id="L64">                case &quot;CREDIT&quot; -&gt; creditsByCurrency.merge(curr, scaledAmount, BigDecimal::add);</span>
-<span class="nc" id="L65">                case null, default -&gt; throw new IllegalArgumentException(&quot;Transaction failed: Invalid entryType &quot; + entry.getEntryType());</span>
-            }
-<span class="fc" id="L67">        }</span>
-
-<span class="fc" id="L69">        Set&lt;String&gt; allCurrencies = new HashSet&lt;&gt;();</span>
-<span class="fc" id="L70">        allCurrencies.addAll(debitsByCurrency.keySet());</span>
-<span class="fc" id="L71">        allCurrencies.addAll(creditsByCurrency.keySet());</span>
-<span class="fc bfc" id="L72" title="All 2 branches covered.">        for (String curr : allCurrencies) {</span>
-<span class="fc" id="L73">            BigDecimal d = debitsByCurrency.getOrDefault(curr, BigDecimal.ZERO);</span>
-<span class="fc" id="L74">            BigDecimal c = creditsByCurrency.getOrDefault(curr, BigDecimal.ZERO);</span>
-<span class="fc bfc" id="L75" title="All 2 branches covered.">            if (d.compareTo(c) != 0) {</span>
-<span class="fc" id="L76">                throw new IllegalArgumentException(&quot;Transaction failed: Unbalanced &quot; + curr</span>
-                        + &quot; entries. Total Debits (&quot; + d + &quot;) != Total Credits (&quot; + c + &quot;)&quot;);
+<span class="pc bpc" id="L74" title="1 of 3 branches missed.">            switch (entry.getEntryType()) {</span>
+<span class="fc" id="L75">                case &quot;DEBIT&quot; -&gt; debitsByCurrency.merge(curr, scaledAmount, BigDecimal::add);</span>
+<span class="fc" id="L76">                case &quot;CREDIT&quot; -&gt; creditsByCurrency.merge(curr, scaledAmount, BigDecimal::add);</span>
+<span class="nc" id="L77">                case null, default -&gt; throw new IllegalArgumentException(&quot;Transaction failed: Invalid entryType &quot; + entry.getEntryType());</span>
             }
 <span class="fc" id="L79">        }</span>
 
-        // 2. Acquire pessimistic locks on accounts in deterministic UUID order (deadlock-free)
-<span class="fc" id="L82">        List&lt;UUID&gt; sortedAccountIds = entries.stream()</span>
-<span class="fc" id="L83">                .map(e -&gt; e.getAccount().getId())</span>
-<span class="fc" id="L84">                .distinct()</span>
-<span class="fc" id="L85">                .sorted()</span>
-<span class="fc" id="L86">                .toList();</span>
+<span class="fc" id="L81">        Set&lt;String&gt; allCurrencies = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L82">        allCurrencies.addAll(debitsByCurrency.keySet());</span>
+<span class="fc" id="L83">        allCurrencies.addAll(creditsByCurrency.keySet());</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">        for (String curr : allCurrencies) {</span>
+<span class="fc" id="L85">            BigDecimal d = debitsByCurrency.getOrDefault(curr, BigDecimal.ZERO);</span>
+<span class="fc" id="L86">            BigDecimal c = creditsByCurrency.getOrDefault(curr, BigDecimal.ZERO);</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">            if (d.compareTo(c) != 0) {</span>
+<span class="fc" id="L88">                throw new IllegalArgumentException(&quot;Transaction failed: Unbalanced &quot; + curr</span>
+                        + &quot; entries. Total Debits (&quot; + d + &quot;) != Total Credits (&quot; + c + &quot;)&quot;);
+            }
+<span class="fc" id="L91">        }</span>
 
-<span class="fc" id="L88">        Map&lt;UUID, Account&gt; lockedAccounts = new HashMap&lt;&gt;();</span>
-<span class="fc bfc" id="L89" title="All 2 branches covered.">        for (UUID accId : sortedAccountIds) {</span>
-<span class="fc" id="L90">            Account locked = accountRepository.findByIdWithLock(accId)</span>
-<span class="pc" id="L91">                    .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + accId));</span>
-<span class="fc" id="L92">            lockedAccounts.put(accId, locked);</span>
-<span class="fc" id="L93">        }</span>
+        // 2. Acquire pessimistic locks on accounts in deterministic UUID order (deadlock-free)
+<span class="fc" id="L94">        List&lt;UUID&gt; sortedAccountIds = entries.stream()</span>
+<span class="fc" id="L95">                .map(e -&gt; e.getAccount().getId())</span>
+<span class="fc" id="L96">                .distinct()</span>
+<span class="fc" id="L97">                .sorted()</span>
+<span class="fc" id="L98">                .toList();</span>
+
+<span class="fc" id="L100">        Map&lt;UUID, Account&gt; lockedAccounts = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">        for (UUID accId : sortedAccountIds) {</span>
+<span class="fc" id="L102">            Account locked = accountRepository.findByIdWithLock(accId)</span>
+<span class="pc" id="L103">                    .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + accId));</span>
+<span class="fc" id="L104">            lockedAccounts.put(accId, locked);</span>
+<span class="fc" id="L105">        }</span>
 
         // 3. Serialize hash-chain head updates via transactional advisory lock
-<span class="fc" id="L96">        jdbcTemplate.queryForList(&quot;SELECT pg_advisory_xact_lock(?)&quot;, CHAIN_LOCK_KEY);</span>
-<span class="fc" id="L97">        String previousHash = getChainHead();</span>
-<span class="fc" id="L98">        UUID generatedJournalId = UUID.randomUUID();</span>
-<span class="fc" id="L99">        ZonedDateTime now = ZonedDateTime.now().truncatedTo(ChronoUnit.MICROS);</span>
-<span class="fc" id="L100">        Instant effectiveInstant = now.toInstant();</span>
+<span class="fc" id="L108">        jdbcTemplate.queryForList(&quot;SELECT pg_advisory_xact_lock(?)&quot;, CHAIN_LOCK_KEY);</span>
+<span class="fc" id="L109">        String previousHash = getChainHead();</span>
+<span class="fc" id="L110">        UUID generatedJournalId = UUID.randomUUID();</span>
+<span class="fc" id="L111">        ZonedDateTime now = ZonedDateTime.now().truncatedTo(ChronoUnit.MICROS);</span>
+<span class="fc" id="L112">        Instant effectiveInstant = now.toInstant();</span>
 
-        // Track in-flight balance adjustments per (account, currency)
-<span class="fc" id="L103">        Map&lt;String, BigDecimal&gt; runningBalances = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L114">        Map&lt;UUID, BigDecimal&gt; runningBalances = new HashMap&lt;&gt;();</span>
 
-<span class="fc bfc" id="L105" title="All 2 branches covered.">        for (LedgerEntry entry : entries) {</span>
-<span class="fc" id="L106">            Account account = lockedAccounts.get(entry.getAccount().getId());</span>
-<span class="fc" id="L107">            entry.setAccount(account);</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">        for (LedgerEntry entry : entries) {</span>
+<span class="fc" id="L117">            Account account = lockedAccounts.get(entry.getAccount().getId());</span>
+<span class="fc" id="L118">            entry.setAccount(account);</span>
 
             // Enforce account currency match
-<span class="fc" id="L110">            String accountCurrency = account.getCurrency().trim().toUpperCase();</span>
-<span class="fc" id="L111">            String entryCurrency = entry.getCurrency();</span>
-<span class="fc bfc" id="L112" title="All 2 branches covered.">            if (!accountCurrency.equals(entryCurrency)) {</span>
-<span class="fc" id="L113">                throw new IllegalArgumentException(&quot;Currency mismatch: Entry currency &quot; + entryCurrency</span>
-<span class="fc" id="L114">                        + &quot; does not match account &quot; + account.getAccountCode() + &quot; currency &quot; + accountCurrency);</span>
+<span class="fc" id="L121">            String accountCurrency = account.getCurrency().trim().toUpperCase();</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">            if (!accountCurrency.equals(entry.getCurrency())) {</span>
+<span class="fc" id="L123">                throw new IllegalArgumentException(&quot;Currency mismatch: Entry currency &quot; + entry.getCurrency()</span>
+<span class="fc" id="L124">                        + &quot; does not match account &quot; + account.getAccountCode() + &quot; currency &quot; + accountCurrency);</span>
             }
 
             // Race-safe idempotency claim using idempotency_keys table (ON CONFLICT DO NOTHING)
-<span class="fc" id="L118">            String idemKey = entry.getIdempotencyKey();</span>
-<span class="pc bpc" id="L119" title="1 of 4 branches missed.">            if (idemKey == null || idemKey.isBlank()) {</span>
-<span class="fc" id="L120">                idemKey = UUID.randomUUID().toString();</span>
-<span class="fc" id="L121">                entry.setIdempotencyKey(idemKey);</span>
+<span class="fc" id="L128">            String idemKey = entry.getIdempotencyKey();</span>
+<span class="pc bpc" id="L129" title="1 of 4 branches missed.">            if (idemKey == null || idemKey.isBlank()) {</span>
+<span class="fc" id="L130">                idemKey = UUID.randomUUID().toString();</span>
+<span class="fc" id="L131">                entry.setIdempotencyKey(idemKey);</span>
             } else {
-<span class="pc bpc" id="L123" title="2 of 4 branches missed.">                String actorKey = (entry.getCreatedBy() == null || entry.getCreatedBy().isBlank())</span>
-<span class="pc" id="L124">                        ? &quot;SYSTEM&quot; : entry.getCreatedBy().trim();</span>
-<span class="fc" id="L125">                String reqHash = HashUtils.sha256(</span>
-<span class="fc" id="L126">                        account.getId() + &quot;|&quot; + entry.getEntryType() + &quot;|&quot; + entry.getAmount() + &quot;|&quot; + entryCurrency);</span>
-<span class="fc" id="L127">                int claimed = jdbcTemplate.update(</span>
+<span class="pc bpc" id="L133" title="2 of 4 branches missed.">                String actorKey = (entry.getCreatedBy() == null || entry.getCreatedBy().isBlank())</span>
+<span class="pc" id="L134">                        ? &quot;SYSTEM&quot; : entry.getCreatedBy().trim();</span>
+<span class="fc" id="L135">                String reqHash = HashUtils.sha256(</span>
+<span class="fc" id="L136">                        account.getId() + &quot;|&quot; + entry.getEntryType() + &quot;|&quot; + entry.getAmount() + &quot;|&quot; + entry.getCurrency());</span>
+<span class="fc" id="L137">                int claimed = jdbcTemplate.update(</span>
                         &quot;INSERT INTO idempotency_keys (idempotency_key, user_id, endpoint, request_hash, status, response_status, response_body, expires_at) &quot; +
-                                &quot;VALUES (?, ?, '/api/v1/ledger/transactions', ?, 'COMPLETED', 200, ?, NOW() + INTERVAL '24 hours') &quot; +
+                                &quot;VALUES (?, ?, '/api/v1/transactions', ?, 'COMPLETED', 200, ?, NOW() + INTERVAL '24 hours') &quot; +
                                 &quot;ON CONFLICT (user_id, idempotency_key) DO NOTHING&quot;,
-<span class="fc" id="L131">                        idemKey, actorKey, reqHash, generatedJournalId.toString());</span>
-<span class="pc bpc" id="L132" title="1 of 4 branches missed.">                if (claimed == 0 || repository.existsByIdempotencyKey(idemKey)) {</span>
-<span class="fc" id="L133">                    throw new IllegalStateException(&quot;Duplicate request rejected: Idempotency key already processed -&gt; &quot; + idemKey);</span>
+<span class="fc" id="L141">                        idemKey, actorKey, reqHash, generatedJournalId.toString());</span>
+<span class="pc bpc" id="L142" title="1 of 4 branches missed.">                if (claimed == 0 || repository.existsByIdempotencyKey(idemKey)) {</span>
+<span class="fc" id="L143">                    throw new IllegalStateException(&quot;Duplicate request rejected: Idempotency key already processed -&gt; &quot; + idemKey);</span>
                 }
             }
 
             // Per-currency balance sufficiency check
-<span class="fc" id="L138">            String balKey = account.getId() + &quot;|&quot; + entryCurrency;</span>
-<span class="fc" id="L139">            BigDecimal currentBalance = runningBalances.computeIfAbsent(</span>
-<span class="fc" id="L140">                    balKey, k -&gt; repository.calculateBalanceByCurrency(account.getId(), entryCurrency));</span>
+<span class="fc" id="L148">            BigDecimal currentBalance = runningBalances.computeIfAbsent(</span>
+<span class="fc" id="L149">                    account.getId(), id -&gt; repository.calculateBalanceByCurrency(id, accountCurrency));</span>
 
-<span class="fc bfc" id="L142" title="All 4 branches covered.">            boolean isAssetDecrease = &quot;Asset&quot;.equals(account.getAccountType()) &amp;&amp; &quot;CREDIT&quot;.equals(entry.getEntryType());</span>
-<span class="fc bfc" id="L143" title="All 4 branches covered.">            boolean isLiabilityDecrease = &quot;Liability&quot;.equals(account.getAccountType()) &amp;&amp; &quot;DEBIT&quot;.equals(entry.getEntryType());</span>
+<span class="fc bfc" id="L151" title="All 4 branches covered.">            boolean isAssetDecrease = &quot;Asset&quot;.equals(account.getAccountType()) &amp;&amp; &quot;CREDIT&quot;.equals(entry.getEntryType());</span>
+<span class="fc bfc" id="L152" title="All 4 branches covered.">            boolean isLiabilityDecrease = &quot;Liability&quot;.equals(account.getAccountType()) &amp;&amp; &quot;DEBIT&quot;.equals(entry.getEntryType());</span>
 
-<span class="fc bfc" id="L145" title="All 4 branches covered.">            if (isAssetDecrease || isLiabilityDecrease) {</span>
-<span class="fc bfc" id="L146" title="All 2 branches covered.">                if (currentBalance.compareTo(entry.getAmount()) &lt; 0) {</span>
-<span class="fc" id="L147">                    throw new IllegalArgumentException(&quot;Transaction failed: Insufficient balance in account &quot;</span>
-<span class="fc" id="L148">                            + account.getAccountCode() + &quot; (&quot; + entryCurrency + &quot;). Available: &quot; + currentBalance);</span>
+<span class="fc bfc" id="L154" title="All 4 branches covered.">            if (isAssetDecrease || isLiabilityDecrease) {</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">                if (currentBalance.compareTo(entry.getAmount()) &lt; 0) {</span>
+<span class="fc" id="L156">                    throw new IllegalArgumentException(&quot;Transaction failed: Insufficient balance in account &quot;</span>
+<span class="fc" id="L157">                            + account.getAccountCode() + &quot; (&quot; + accountCurrency + &quot;). Available: &quot; + currentBalance);</span>
                 }
             }
 
-            // Update in-memory running balance for this (account, currency)
-<span class="fc bfc" id="L153" title="All 4 branches covered.">            boolean normalDebit = &quot;Asset&quot;.equals(account.getAccountType()) || &quot;Expense&quot;.equals(account.getAccountType());</span>
-<span class="fc bfc" id="L154" title="All 2 branches covered.">            BigDecimal delta = (normalDebit == &quot;DEBIT&quot;.equals(entry.getEntryType()))</span>
-<span class="fc" id="L155">                    ? entry.getAmount() : entry.getAmount().negate();</span>
-<span class="fc" id="L156">            runningBalances.put(balKey, currentBalance.add(delta));</span>
+<span class="fc bfc" id="L161" title="All 4 branches covered.">            boolean normalDebit = &quot;Asset&quot;.equals(account.getAccountType()) || &quot;Expense&quot;.equals(account.getAccountType());</span>
+<span class="fc bfc" id="L162" title="All 2 branches covered.">            BigDecimal delta = (normalDebit == &quot;DEBIT&quot;.equals(entry.getEntryType()))</span>
+<span class="fc" id="L163">                    ? entry.getAmount() : entry.getAmount().negate();</span>
+<span class="fc" id="L164">            runningBalances.put(account.getId(), currentBalance.add(delta));</span>
 
-<span class="fc" id="L158">            entry.setJournalId(generatedJournalId);</span>
-<span class="fc" id="L159">            entry.setEffectiveDate(now);</span>
-<span class="pc bpc" id="L160" title="2 of 4 branches missed.">            if (entry.getCreatedBy() == null || entry.getCreatedBy().isBlank()) {</span>
-<span class="nc" id="L161">                entry.setCreatedBy(&quot;SYSTEM&quot;);</span>
+<span class="fc" id="L166">            entry.setJournalId(generatedJournalId);</span>
+<span class="fc" id="L167">            entry.setEffectiveDate(now);</span>
+<span class="pc bpc" id="L168" title="2 of 4 branches missed.">            if (entry.getCreatedBy() == null || entry.getCreatedBy().isBlank()) {</span>
+<span class="nc" id="L169">                entry.setCreatedBy(&quot;SYSTEM&quot;);</span>
             }
-<span class="pc bpc" id="L163" title="1 of 2 branches missed.">            if (entry.getEntryId() == null) {</span>
-<span class="fc" id="L164">                entry.setEntryId(UUID.randomUUID());</span>
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">            if (entry.getEntryId() == null) {</span>
+<span class="fc" id="L172">                entry.setEntryId(UUID.randomUUID());</span>
             }
 
-<span class="fc" id="L167">            entry.setPreviousHash(previousHash);</span>
-<span class="fc" id="L168">            String computedHash = HashUtils.computeEntryHash(</span>
+<span class="fc" id="L175">            entry.setPreviousHash(previousHash);</span>
+<span class="fc" id="L176">            String computedHash = HashUtils.computeEntryHash(</span>
                     previousHash,
-<span class="fc" id="L170">                    entry.getEntryId(),</span>
-<span class="fc" id="L171">                    entry.getJournalId(),</span>
-<span class="fc" id="L172">                    account.getId(),</span>
-<span class="fc" id="L173">                    entry.getEntryType(),</span>
-<span class="fc" id="L174">                    entry.getAmount(),</span>
-                    entryCurrency,
+<span class="fc" id="L178">                    entry.getEntryId(),</span>
+<span class="fc" id="L179">                    entry.getJournalId(),</span>
+<span class="fc" id="L180">                    account.getId(),</span>
+<span class="fc" id="L181">                    entry.getEntryType(),</span>
+<span class="fc" id="L182">                    entry.getAmount(),</span>
+<span class="fc" id="L183">                    entry.getCurrency(),</span>
                     effectiveInstant,
-<span class="fc" id="L177">                    entry.getCreatedBy()</span>
+<span class="fc" id="L185">                    entry.getCreatedBy()</span>
             );
 
-<span class="fc" id="L180">            entry.setHash(computedHash);</span>
-<span class="fc" id="L181">            previousHash = computedHash;</span>
-<span class="fc" id="L182">            entry.setStatus(&quot;POSTED&quot;);</span>
-<span class="fc" id="L183">        }</span>
+<span class="fc" id="L188">            entry.setHash(computedHash);</span>
+<span class="fc" id="L189">            previousHash = computedHash;</span>
+<span class="fc" id="L190">            entry.setStatus(&quot;POSTED&quot;);</span>
+<span class="fc" id="L191">        }</span>
 
-<span class="fc" id="L185">        repository.saveAllAndFlush(entries);</span>
+<span class="fc" id="L193">        repository.saveAllAndFlush(entries);</span>
 
-        // 4. Refresh materialized balance_snapshots cache for each account's base currency
-<span class="fc bfc" id="L188" title="All 2 branches covered.">        for (Map.Entry&lt;String, BigDecimal&gt; bal : runningBalances.entrySet()) {</span>
-<span class="fc" id="L189">            String[] parts = bal.getKey().split(&quot;\\|&quot;);</span>
-<span class="fc" id="L190">            UUID accId = UUID.fromString(parts[0]);</span>
-<span class="fc" id="L191">            String curr = parts[1];</span>
-<span class="fc" id="L192">            Account acc = lockedAccounts.get(accId);</span>
-<span class="pc bpc" id="L193" title="1 of 2 branches missed.">            if (curr.equalsIgnoreCase(acc.getCurrency().trim())) {</span>
-<span class="fc" id="L194">                jdbcTemplate.update(</span>
-                        &quot;INSERT INTO balance_snapshots (account_id, currency, balance, updated_at) &quot; +
-                                &quot;VALUES (?, ?, ?, NOW()) &quot; +
-                                &quot;ON CONFLICT (account_id) DO UPDATE SET balance = EXCLUDED.balance, updated_at = NOW()&quot;,
-<span class="fc" id="L198">                        accId, acc.getCurrency().trim(), bal.getValue());</span>
-            }
-<span class="fc" id="L200">        }</span>
+        // 4. Refresh materialized balance_snapshots cache
+<span class="fc bfc" id="L196" title="All 2 branches covered.">        for (Map.Entry&lt;UUID, BigDecimal&gt; bal : runningBalances.entrySet()) {</span>
+<span class="fc" id="L197">            Account acc = lockedAccounts.get(bal.getKey());</span>
+<span class="fc" id="L198">            jdbcTemplate.update(</span>
+                    &quot;INSERT INTO balance_snapshots (account_id, currency, balance, updated_at) &quot; +
+                            &quot;VALUES (?, ?, ?, NOW()) &quot; +
+                            &quot;ON CONFLICT (account_id) DO UPDATE SET balance = EXCLUDED.balance, updated_at = NOW()&quot;,
+<span class="fc" id="L202">                    bal.getKey(), acc.getCurrency().trim(), bal.getValue());</span>
+<span class="fc" id="L203">        }</span>
 
-<span class="fc" id="L202">        return generatedJournalId;</span>
+<span class="fc" id="L205">        return generatedJournalId;</span>
     }
 
     private String getChainHead() {
-<span class="fc" id="L206">        List&lt;String&gt; heads = jdbcTemplate.queryForList(</span>
+<span class="fc" id="L209">        List&lt;String&gt; heads = jdbcTemplate.queryForList(</span>
                 &quot;SELECT hash FROM ledger_entries ORDER BY chain_seq DESC LIMIT 1&quot;, String.class);
-<span class="pc bpc" id="L208" title="3 of 6 branches missed.">        if (heads.isEmpty() || heads.getFirst() == null || heads.getFirst().isBlank()) {</span>
-<span class="nc" id="L209">            return HashUtils.GENESIS_HASH;</span>
+<span class="pc bpc" id="L211" title="3 of 6 branches missed.">        if (heads.isEmpty() || heads.getFirst() == null || heads.getFirst().isBlank()) {</span>
+<span class="nc" id="L212">            return HashUtils.GENESIS_HASH;</span>
         }
-<span class="fc" id="L211">        return heads.getFirst().trim();</span>
+<span class="fc" id="L214">        return heads.getFirst().trim();</span>
     }
 
     @Transactional
     public UUID revertTransaction(UUID originalJournalId) {
-        // Lock per originalJournalId so concurrent reversals serialize safely
-<span class="nc" id="L217">        jdbcTemplate.queryForList(&quot;SELECT pg_advisory_xact_lock(hashtext(?))&quot;, &quot;REV:&quot; + originalJournalId);</span>
+<span class="fc" id="L219">        jdbcTemplate.queryForList(&quot;SELECT pg_advisory_xact_lock(hashtext(?))&quot;, &quot;REV:&quot; + originalJournalId);</span>
 
-<span class="nc" id="L219">        int claimed = jdbcTemplate.update(</span>
+<span class="fc" id="L221">        int claimed = jdbcTemplate.update(</span>
                 &quot;INSERT INTO idempotency_keys (idempotency_key, user_id, endpoint, request_hash, status, response_status, response_body, expires_at) &quot; +
-                        &quot;VALUES (?, 'REVERSAL_ENGINE', '/api/v1/ledger/reversals', ?, 'PROCESSING', 200, 'PENDING', NOW() + INTERVAL '24 hours') &quot; +
+                        &quot;VALUES (?, 'REVERSAL_ENGINE', '/api/v1/reversals', ?, 'PROCESSING', 200, 'PENDING', NOW() + INTERVAL '24 hours') &quot; +
                         &quot;ON CONFLICT (user_id, idempotency_key) DO NOTHING&quot;,
-<span class="nc" id="L223">                &quot;REV-&quot; + originalJournalId, HashUtils.sha256(originalJournalId.toString()));</span>
-<span class="nc bnc" id="L224" title="All 2 branches missed.">        if (claimed == 0) {</span>
-<span class="nc" id="L225">            throw new IllegalStateException(&quot;Reversal rejected: Journal ID already reversed -&gt; &quot; + originalJournalId);</span>
+<span class="fc" id="L225">                &quot;REV-&quot; + originalJournalId, HashUtils.sha256(originalJournalId.toString()));</span>
+<span class="fc bfc" id="L226" title="All 2 branches covered.">        if (claimed == 0) {</span>
+<span class="fc" id="L227">            throw new IllegalStateException(&quot;Reversal rejected: Journal ID already reversed -&gt; &quot; + originalJournalId);</span>
         }
 
-<span class="nc" id="L228">        List&lt;LedgerEntry&gt; originalEntries = repository.findByJournalId(originalJournalId);</span>
-<span class="nc bnc" id="L229" title="All 2 branches missed.">        if (originalEntries.isEmpty()) {</span>
-<span class="nc" id="L230">            throw new IllegalArgumentException(&quot;Transaction failed: Original journal not found -&gt; &quot; + originalJournalId);</span>
+<span class="fc" id="L230">        List&lt;LedgerEntry&gt; originalEntries = repository.findByJournalId(originalJournalId);</span>
+<span class="pc bpc" id="L231" title="1 of 2 branches missed.">        if (originalEntries.isEmpty()) {</span>
+<span class="nc" id="L232">            throw new IllegalArgumentException(&quot;Transaction failed: Original journal not found -&gt; &quot; + originalJournalId);</span>
         }
 
-<span class="nc" id="L233">        List&lt;LedgerEntry&gt; reversalEntries = new ArrayList&lt;&gt;();</span>
-<span class="nc" id="L234">        BigDecimal totalDebit = BigDecimal.ZERO;</span>
-<span class="nc bnc" id="L235" title="All 2 branches missed.">        for (int i = 0; i &lt; originalEntries.size(); i++) {</span>
-<span class="nc" id="L236">            LedgerEntry orig = originalEntries.get(i);</span>
-<span class="nc bnc" id="L237" title="All 2 branches missed.">            if (&quot;DEBIT&quot;.equals(orig.getEntryType())) {</span>
-<span class="nc" id="L238">                totalDebit = totalDebit.add(orig.getAmount());</span>
+<span class="fc" id="L235">        List&lt;LedgerEntry&gt; reversalEntries = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L236">        BigDecimal totalDebit = BigDecimal.ZERO;</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">        for (int i = 0; i &lt; originalEntries.size(); i++) {</span>
+<span class="fc" id="L238">            LedgerEntry orig = originalEntries.get(i);</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">            if (&quot;DEBIT&quot;.equals(orig.getEntryType())) {</span>
+<span class="fc" id="L240">                totalDebit = totalDebit.add(orig.getAmount());</span>
             }
-<span class="nc" id="L240">            reversalEntries.add(buildMirrorEntry(orig, originalJournalId, i));</span>
+<span class="fc" id="L242">            reversalEntries.add(buildMirrorEntry(orig, originalJournalId, i));</span>
         }
 
-<span class="nc" id="L243">        UUID reversalJournalId = postTransaction(reversalEntries);</span>
+<span class="fc" id="L245">        UUID reversalJournalId = postTransaction(reversalEntries);</span>
 
-<span class="nc" id="L245">        jdbcTemplate.update(</span>
+<span class="fc" id="L247">        jdbcTemplate.update(</span>
                 &quot;INSERT INTO reversals (original_journal_id, reversal_journal_id, reversal_idempotency_key, refund_type, fee_policy, refund_amount, reason) &quot; +
                         &quot;VALUES (?, ?, ?, 'FULL', 'FULL', ?, 'Full mirror reversal')&quot;,
                 originalJournalId, reversalJournalId, &quot;REV-&quot; + originalJournalId, totalDebit);
 
-<span class="nc" id="L250">        jdbcTemplate.update(</span>
+<span class="fc" id="L252">        jdbcTemplate.update(</span>
                 &quot;UPDATE idempotency_keys SET status = 'COMPLETED', response_body = ? WHERE user_id = 'REVERSAL_ENGINE' AND idempotency_key = ?&quot;,
-<span class="nc" id="L252">                reversalJournalId.toString(), &quot;REV-&quot; + originalJournalId);</span>
+<span class="fc" id="L254">                reversalJournalId.toString(), &quot;REV-&quot; + originalJournalId);</span>
 
-<span class="nc" id="L254">        return reversalJournalId;</span>
+<span class="fc" id="L256">        return reversalJournalId;</span>
     }
 
     private LedgerEntry buildMirrorEntry(LedgerEntry original, UUID originalJournalId, int index) {
-<span class="nc" id="L258">        LedgerEntry reversal = new LedgerEntry();</span>
-<span class="nc" id="L259">        reversal.setAccount(original.getAccount());</span>
-<span class="nc" id="L260">        reversal.setAmount(original.getAmount());</span>
-<span class="nc" id="L261">        reversal.setCurrency(original.getCurrency().trim());</span>
-<span class="nc" id="L262">        reversal.setCreatedBy(&quot;REVERSAL_ENGINE&quot;);</span>
-<span class="nc" id="L263">        reversal.setIdempotencyKey(&quot;REV-&quot; + originalJournalId + &quot;-&quot; + index);</span>
-<span class="nc bnc" id="L264" title="All 2 branches missed.">        reversal.setEntryType(&quot;DEBIT&quot;.equals(original.getEntryType()) ? &quot;CREDIT&quot; : &quot;DEBIT&quot;);</span>
-<span class="nc" id="L265">        return reversal;</span>
+<span class="fc" id="L260">        LedgerEntry reversal = new LedgerEntry();</span>
+<span class="fc" id="L261">        reversal.setAccount(original.getAccount());</span>
+<span class="fc" id="L262">        reversal.setAmount(original.getAmount());</span>
+<span class="fc" id="L263">        reversal.setCurrency(original.getCurrency().trim());</span>
+<span class="fc" id="L264">        reversal.setCreatedBy(&quot;REVERSAL_ENGINE&quot;);</span>
+<span class="fc" id="L265">        reversal.setIdempotencyKey(&quot;REV-&quot; + originalJournalId + &quot;-&quot; + index);</span>
+<span class="fc bfc" id="L266" title="All 2 branches covered.">        reversal.setEntryType(&quot;DEBIT&quot;.equals(original.getEntryType()) ? &quot;CREDIT&quot; : &quot;DEBIT&quot;);</span>
+<span class="fc" id="L267">        return reversal;</span>
     }
 
     public String verifyAuditTrail() {
-<span class="fc" id="L269">        var rows = jdbcTemplate.queryForList(</span>
+<span class="fc" id="L271">        var rows = jdbcTemplate.queryForList(</span>
                 &quot;SELECT entry_id, journal_id, account_id, entry_type, amount, currency, &quot; +
                         &quot;effective_date, created_by, previous_hash, hash &quot; +
                         &quot;FROM ledger_entries ORDER BY chain_seq ASC&quot;);
 
-<span class="fc" id="L274">        String expectedPreviousHash = HashUtils.GENESIS_HASH;</span>
-<span class="fc" id="L275">        int verifiedCount = 0;</span>
+<span class="fc" id="L276">        String expectedPreviousHash = HashUtils.GENESIS_HASH;</span>
+<span class="fc" id="L277">        int verifiedCount = 0;</span>
 
-<span class="fc bfc" id="L277" title="All 2 branches covered.">        for (Map&lt;String, Object&gt; row : rows) {</span>
-<span class="fc" id="L278">            UUID entryId = (UUID) row.get(&quot;entry_id&quot;);</span>
-<span class="fc" id="L279">            String rawPrev = (String) row.get(&quot;previous_hash&quot;);</span>
-<span class="pc bpc" id="L280" title="1 of 2 branches missed.">            String actualPreviousHash = rawPrev == null ? &quot;&quot; : rawPrev.trim();</span>
+<span class="fc bfc" id="L279" title="All 2 branches covered.">        for (Map&lt;String, Object&gt; row : rows) {</span>
+<span class="fc" id="L280">            UUID entryId = (UUID) row.get(&quot;entry_id&quot;);</span>
+<span class="fc" id="L281">            String rawPrev = (String) row.get(&quot;previous_hash&quot;);</span>
+<span class="pc bpc" id="L282" title="1 of 2 branches missed.">            String actualPreviousHash = rawPrev == null ? &quot;&quot; : rawPrev.trim();</span>
 
-<span class="pc bpc" id="L282" title="1 of 2 branches missed.">            if (!expectedPreviousHash.equals(actualPreviousHash)) {</span>
-<span class="nc" id="L283">                return &quot;TAMPERING DETECTED! Broken chain link at Entry ID: &quot; + entryId</span>
+<span class="pc bpc" id="L284" title="1 of 2 branches missed.">            if (!expectedPreviousHash.equals(actualPreviousHash)) {</span>
+<span class="nc" id="L285">                return &quot;TAMPERING DETECTED! Broken chain link at Entry ID: &quot; + entryId</span>
                         + &quot; (expected previousHash=&quot; + expectedPreviousHash + &quot;, actual=&quot; + actualPreviousHash + &quot;)&quot;;
             }
 
-<span class="fc" id="L287">            Instant effectiveInstant = extractInstant(row.get(&quot;effective_date&quot;));</span>
-<span class="pc bpc" id="L288" title="1 of 2 branches missed.">            String currency = row.get(&quot;currency&quot;) == null ? &quot;&quot; : row.get(&quot;currency&quot;).toString().trim();</span>
+<span class="fc" id="L289">            Instant effectiveInstant = extractInstant(row.get(&quot;effective_date&quot;));</span>
+<span class="pc bpc" id="L290" title="1 of 2 branches missed.">            String currency = row.get(&quot;currency&quot;) == null ? &quot;&quot; : row.get(&quot;currency&quot;).toString().trim();</span>
 
-<span class="fc" id="L290">            String recalculatedHash = HashUtils.computeEntryHash(</span>
+<span class="fc" id="L292">            String recalculatedHash = HashUtils.computeEntryHash(</span>
                     actualPreviousHash,
                     entryId,
-<span class="fc" id="L293">                    (UUID) row.get(&quot;journal_id&quot;),</span>
-<span class="fc" id="L294">                    (UUID) row.get(&quot;account_id&quot;),</span>
-<span class="fc" id="L295">                    (String) row.get(&quot;entry_type&quot;),</span>
-<span class="fc" id="L296">                    (BigDecimal) row.get(&quot;amount&quot;),</span>
+<span class="fc" id="L295">                    (UUID) row.get(&quot;journal_id&quot;),</span>
+<span class="fc" id="L296">                    (UUID) row.get(&quot;account_id&quot;),</span>
+<span class="fc" id="L297">                    (String) row.get(&quot;entry_type&quot;),</span>
+<span class="fc" id="L298">                    (BigDecimal) row.get(&quot;amount&quot;),</span>
                     currency,
                     effectiveInstant,
-<span class="fc" id="L299">                    (String) row.get(&quot;created_by&quot;)</span>
+<span class="fc" id="L301">                    (String) row.get(&quot;created_by&quot;)</span>
             );
 
-<span class="fc" id="L302">            String rawHash = (String) row.get(&quot;hash&quot;);</span>
-<span class="pc bpc" id="L303" title="1 of 2 branches missed.">            String storedHash = rawHash == null ? &quot;&quot; : rawHash.trim();</span>
-<span class="fc bfc" id="L304" title="All 2 branches covered.">            if (!recalculatedHash.equals(storedHash)) {</span>
-<span class="fc" id="L305">                return &quot;TAMPERING DETECTED! Row corrupted at Entry ID: &quot; + entryId;</span>
+<span class="fc" id="L304">            String rawHash = (String) row.get(&quot;hash&quot;);</span>
+<span class="pc bpc" id="L305" title="1 of 2 branches missed.">            String storedHash = rawHash == null ? &quot;&quot; : rawHash.trim();</span>
+<span class="fc bfc" id="L306" title="All 2 branches covered.">            if (!recalculatedHash.equals(storedHash)) {</span>
+<span class="fc" id="L307">                return &quot;TAMPERING DETECTED! Row corrupted at Entry ID: &quot; + entryId;</span>
             }
 
-<span class="fc" id="L308">            expectedPreviousHash = storedHash;</span>
-<span class="fc" id="L309">            verifiedCount++;</span>
-<span class="fc" id="L310">        }</span>
+<span class="fc" id="L310">            expectedPreviousHash = storedHash;</span>
+<span class="fc" id="L311">            verifiedCount++;</span>
+<span class="fc" id="L312">        }</span>
 
-<span class="fc" id="L312">        return &quot;AUDIT PASSED: &quot; + verifiedCount + &quot; cryptographic hashes verified securely. Zero tampering detected.&quot;;</span>
+<span class="fc" id="L314">        return &quot;AUDIT PASSED: &quot; + verifiedCount + &quot; cryptographic hashes verified securely. Zero tampering detected.&quot;;</span>
     }
 
     private Instant extractInstant(Object rawTs) {
-<span class="pc bpc" id="L316" title="4 of 5 branches missed.">        return switch (rawTs) {</span>
-<span class="nc" id="L317">            case null -&gt; null;</span>
-<span class="fc" id="L318">            case Timestamp ts -&gt; ts.toInstant().truncatedTo(ChronoUnit.MICROS);</span>
-<span class="nc" id="L319">            case OffsetDateTime odt -&gt; odt.toInstant().truncatedTo(ChronoUnit.MICROS);</span>
-<span class="nc" id="L320">            case Instant inst -&gt; inst.truncatedTo(ChronoUnit.MICROS);</span>
-<span class="nc" id="L321">            default -&gt; Instant.parse(rawTs.toString()).truncatedTo(ChronoUnit.MICROS);</span>
+<span class="pc bpc" id="L318" title="4 of 5 branches missed.">        return switch (rawTs) {</span>
+<span class="nc" id="L319">            case null -&gt; null;</span>
+<span class="fc" id="L320">            case Timestamp ts -&gt; ts.toInstant().truncatedTo(ChronoUnit.MICROS);</span>
+<span class="nc" id="L321">            case OffsetDateTime odt -&gt; odt.toInstant().truncatedTo(ChronoUnit.MICROS);</span>
+<span class="nc" id="L322">            case Instant inst -&gt; inst.truncatedTo(ChronoUnit.MICROS);</span>
+<span class="nc" id="L323">            default -&gt; Instant.parse(rawTs.toString()).truncatedTo(ChronoUnit.MICROS);</span>
         };
     }
 
     @Transactional
     public UUID transferFunds(UUID fromAccountId, UUID toAccountId, BigDecimal amount) {
-<span class="nc bnc" id="L327" title="All 2 branches missed.">        if (fromAccountId.equals(toAccountId)) {</span>
-<span class="nc" id="L328">            throw new IllegalArgumentException(&quot;Transfer failed: Sender and receiver accounts must be different.&quot;);</span>
+<span class="pc bpc" id="L329" title="1 of 2 branches missed.">        if (fromAccountId.equals(toAccountId)) {</span>
+<span class="nc" id="L330">            throw new IllegalArgumentException(&quot;Transfer failed: Sender and receiver accounts must be different.&quot;);</span>
         }
 
-<span class="nc bnc" id="L331" title="All 2 branches missed.">        UUID firstLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? fromAccountId : toAccountId;</span>
-<span class="nc bnc" id="L332" title="All 2 branches missed.">        UUID secondLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? toAccountId : fromAccountId;</span>
+<span class="pc bpc" id="L333" title="1 of 2 branches missed.">        UUID firstLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? fromAccountId : toAccountId;</span>
+<span class="pc bpc" id="L334" title="1 of 2 branches missed.">        UUID secondLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? toAccountId : fromAccountId;</span>
 
-<span class="nc" id="L334">        accountRepository.findByIdWithLock(firstLock)</span>
-<span class="nc" id="L335">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + firstLock));</span>
-<span class="nc" id="L336">        accountRepository.findByIdWithLock(secondLock)</span>
-<span class="nc" id="L337">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + secondLock));</span>
+<span class="fc" id="L336">        accountRepository.findByIdWithLock(firstLock)</span>
+<span class="pc" id="L337">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + firstLock));</span>
+<span class="fc" id="L338">        accountRepository.findByIdWithLock(secondLock)</span>
+<span class="pc" id="L339">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + secondLock));</span>
 
-<span class="nc" id="L339">        Account fromAccount = accountRepository.findById(fromAccountId).orElseThrow();</span>
-<span class="nc" id="L340">        Account toAccount = accountRepository.findById(toAccountId).orElseThrow();</span>
+<span class="fc" id="L341">        Account fromAccount = accountRepository.findById(fromAccountId).orElseThrow();</span>
+<span class="fc" id="L342">        Account toAccount = accountRepository.findById(toAccountId).orElseThrow();</span>
 
-<span class="nc bnc" id="L342" title="All 2 branches missed.">        if (!fromAccount.getCurrency().trim().equalsIgnoreCase(toAccount.getCurrency().trim())) {</span>
-<span class="nc" id="L343">            throw new IllegalArgumentException(&quot;Transfer failed: Cross-currency transfers must use FX conversion.&quot;);</span>
+<span class="pc bpc" id="L344" title="1 of 2 branches missed.">        if (!fromAccount.getCurrency().trim().equalsIgnoreCase(toAccount.getCurrency().trim())) {</span>
+<span class="nc" id="L345">            throw new IllegalArgumentException(&quot;Transfer failed: Cross-currency transfers must use FX conversion.&quot;);</span>
         }
 
-<span class="nc" id="L346">        LedgerEntry creditSender = new LedgerEntry();</span>
-<span class="nc" id="L347">        creditSender.setAccount(fromAccount);</span>
-<span class="nc" id="L348">        creditSender.setEntryType(&quot;CREDIT&quot;);</span>
-<span class="nc" id="L349">        creditSender.setAmount(amount);</span>
-<span class="nc" id="L350">        creditSender.setCurrency(fromAccount.getCurrency().trim());</span>
-<span class="nc" id="L351">        creditSender.setCreatedBy(&quot;SYSTEM_P2P&quot;);</span>
+<span class="fc" id="L348">        LedgerEntry creditSender = new LedgerEntry();</span>
+<span class="fc" id="L349">        creditSender.setAccount(fromAccount);</span>
+<span class="fc" id="L350">        creditSender.setEntryType(&quot;CREDIT&quot;);</span>
+<span class="fc" id="L351">        creditSender.setAmount(amount);</span>
+<span class="fc" id="L352">        creditSender.setCurrency(fromAccount.getCurrency().trim());</span>
+<span class="fc" id="L353">        creditSender.setCreatedBy(&quot;SYSTEM_P2P&quot;);</span>
 
-<span class="nc" id="L353">        LedgerEntry debitReceiver = new LedgerEntry();</span>
-<span class="nc" id="L354">        debitReceiver.setAccount(toAccount);</span>
-<span class="nc" id="L355">        debitReceiver.setEntryType(&quot;DEBIT&quot;);</span>
-<span class="nc" id="L356">        debitReceiver.setAmount(amount);</span>
-<span class="nc" id="L357">        debitReceiver.setCurrency(toAccount.getCurrency().trim());</span>
-<span class="nc" id="L358">        debitReceiver.setCreatedBy(&quot;SYSTEM_P2P&quot;);</span>
+<span class="fc" id="L355">        LedgerEntry debitReceiver = new LedgerEntry();</span>
+<span class="fc" id="L356">        debitReceiver.setAccount(toAccount);</span>
+<span class="fc" id="L357">        debitReceiver.setEntryType(&quot;DEBIT&quot;);</span>
+<span class="fc" id="L358">        debitReceiver.setAmount(amount);</span>
+<span class="fc" id="L359">        debitReceiver.setCurrency(toAccount.getCurrency().trim());</span>
+<span class="fc" id="L360">        debitReceiver.setCreatedBy(&quot;SYSTEM_P2P&quot;);</span>
 
-<span class="nc" id="L360">        return postTransaction(Arrays.asList(creditSender, debitReceiver));</span>
+<span class="fc" id="L362">        return postTransaction(Arrays.asList(creditSender, debitReceiver));</span>
+    }
+
+    public Map&lt;String, Object&gt; getTrialBalance(ZonedDateTime asOfDate, String currencyFilter) {
+<span class="pc bpc" id="L366" title="1 of 2 branches missed.">        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;</span>
+<span class="pc bpc" id="L367" title="2 of 4 branches missed.">        String filter = (currencyFilter == null || currencyFilter.isBlank())</span>
+<span class="pc" id="L368">                ? null : currencyFilter.trim().toUpperCase();</span>
+
+<span class="fc" id="L370">        List&lt;Object[]&gt; rows = repository.generateTrialBalanceAsOf(cutoff);</span>
+<span class="fc" id="L371">        List&lt;Object&gt; accounts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L372">        Map&lt;String, BigDecimal&gt; debitsByCurr = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L373">        Map&lt;String, BigDecimal&gt; creditsByCurr = new LinkedHashMap&lt;&gt;();</span>
+
+<span class="fc bfc" id="L375" title="All 2 branches covered.">        for (Object[] row : rows) {</span>
+<span class="fc" id="L376">            String curr = row[3].toString().trim().toUpperCase();</span>
+<span class="pc bpc" id="L377" title="1 of 4 branches missed.">            if (filter != null &amp;&amp; !filter.equals(curr)) {</span>
+<span class="fc" id="L378">                continue;</span>
+            }
+<span class="fc" id="L380">            BigDecimal debits = (BigDecimal) row[4];</span>
+<span class="fc" id="L381">            BigDecimal credits = (BigDecimal) row[5];</span>
+<span class="fc" id="L382">            BigDecimal netBalance = (BigDecimal) row[6];</span>
+
+<span class="fc" id="L384">            Map&lt;String, Object&gt; item = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L385">            item.put(&quot;accountCode&quot;, row[0]);</span>
+<span class="fc" id="L386">            item.put(&quot;accountName&quot;, row[1]);</span>
+<span class="fc" id="L387">            item.put(&quot;accountType&quot;, row[2]);</span>
+<span class="fc" id="L388">            item.put(&quot;currency&quot;, curr);</span>
+<span class="fc" id="L389">            item.put(&quot;totalDebits&quot;, debits);</span>
+<span class="fc" id="L390">            item.put(&quot;totalCredits&quot;, credits);</span>
+<span class="fc" id="L391">            item.put(&quot;netBalance&quot;, netBalance);</span>
+<span class="fc" id="L392">            accounts.add(item);</span>
+
+<span class="fc" id="L394">            debitsByCurr.merge(curr, debits, BigDecimal::add);</span>
+<span class="fc" id="L395">            creditsByCurr.merge(curr, credits, BigDecimal::add);</span>
+<span class="fc" id="L396">        }</span>
+
+<span class="fc" id="L398">        List&lt;Object&gt; currencySummaries = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L399">        boolean allBalanced = true;</span>
+<span class="fc bfc" id="L400" title="All 2 branches covered.">        for (String curr : debitsByCurr.keySet()) {</span>
+<span class="fc" id="L401">            BigDecimal d = debitsByCurr.getOrDefault(curr, BigDecimal.ZERO);</span>
+<span class="fc" id="L402">            BigDecimal c = creditsByCurr.getOrDefault(curr, BigDecimal.ZERO);</span>
+<span class="pc bpc" id="L403" title="1 of 2 branches missed.">            boolean balanced = d.compareTo(c) == 0;</span>
+<span class="pc bpc" id="L404" title="1 of 2 branches missed.">            if (!balanced) {</span>
+<span class="nc" id="L405">                allBalanced = false;</span>
+            }
+<span class="fc" id="L407">            Map&lt;String, Object&gt; summary = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L408">            summary.put(&quot;currency&quot;, curr);</span>
+<span class="fc" id="L409">            summary.put(&quot;totalDebits&quot;, d);</span>
+<span class="fc" id="L410">            summary.put(&quot;totalCredits&quot;, c);</span>
+<span class="fc" id="L411">            summary.put(&quot;difference&quot;, d.subtract(c));</span>
+<span class="fc" id="L412">            summary.put(&quot;balanced&quot;, balanced);</span>
+<span class="fc" id="L413">            currencySummaries.add(summary);</span>
+<span class="fc" id="L414">        }</span>
+
+<span class="fc" id="L416">        this.lastTrialBalanceCheckAt = Instant.now();</span>
+
+<span class="fc" id="L418">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L419">        report.put(&quot;report&quot;, &quot;Trial Balance&quot;);</span>
+<span class="fc" id="L420">        report.put(&quot;asOfDate&quot;, cutoff.toString());</span>
+<span class="pc bpc" id="L421" title="1 of 2 branches missed.">        report.put(&quot;currency&quot;, filter == null ? &quot;ALL&quot; : filter);</span>
+<span class="fc" id="L422">        report.put(&quot;accounts&quot;, accounts);</span>
+<span class="fc" id="L423">        report.put(&quot;currencySummaries&quot;, currencySummaries);</span>
+<span class="fc" id="L424">        report.put(&quot;balanced&quot;, allBalanced);</span>
+<span class="fc" id="L425">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L426">        return report;</span>
+    }
+
+    public Map&lt;String, Object&gt; getAccountStatement(UUID accountId, ZonedDateTime from, ZonedDateTime to,
+                                                   int page, int size) {
+<span class="fc" id="L431">        Account account = accountRepository.findById(accountId)</span>
+<span class="pc" id="L432">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + accountId));</span>
+
+<span class="fc" id="L434">        List&lt;StatementRow&gt; allMatching = computeStatementWithRunningBalance(account, from, to);</span>
+
+<span class="fc" id="L436">        int safePage = Math.max(0, page);</span>
+<span class="fc" id="L437">        int safeSize = Math.clamp(size, 1, 500);</span>
+<span class="fc" id="L438">        int totalElements = allMatching.size();</span>
+<span class="pc bpc" id="L439" title="1 of 2 branches missed.">        int totalPages = totalElements == 0 ? 0 : (int) Math.ceil((double) totalElements / safeSize);</span>
+<span class="fc" id="L440">        int fromIdx = Math.min(safePage * safeSize, totalElements);</span>
+<span class="fc" id="L441">        int toIdx = Math.min(fromIdx + safeSize, totalElements);</span>
+
+<span class="fc" id="L443">        Map&lt;String, Object&gt; response = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L444">        response.put(&quot;accountId&quot;, account.getId().toString());</span>
+<span class="fc" id="L445">        response.put(&quot;accountCode&quot;, account.getAccountCode());</span>
+<span class="fc" id="L446">        response.put(&quot;accountName&quot;, account.getAccountName());</span>
+<span class="fc" id="L447">        response.put(&quot;accountType&quot;, account.getAccountType());</span>
+<span class="fc" id="L448">        response.put(&quot;currency&quot;, account.getCurrency().trim());</span>
+<span class="fc" id="L449">        response.put(&quot;page&quot;, safePage);</span>
+<span class="fc" id="L450">        response.put(&quot;size&quot;, safeSize);</span>
+<span class="fc" id="L451">        response.put(&quot;totalElements&quot;, totalElements);</span>
+<span class="fc" id="L452">        response.put(&quot;totalPages&quot;, totalPages);</span>
+<span class="fc" id="L453">        response.put(&quot;entries&quot;, allMatching.subList(fromIdx, toIdx));</span>
+<span class="fc" id="L454">        return response;</span>
+    }
+
+    public String exportAccountStatementCsv(UUID accountId, ZonedDateTime from, ZonedDateTime to) {
+<span class="fc" id="L458">        Account account = accountRepository.findById(accountId)</span>
+<span class="pc" id="L459">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + accountId));</span>
+
+<span class="fc" id="L461">        List&lt;StatementRow&gt; rows = computeStatementWithRunningBalance(account, from, to);</span>
+<span class="fc" id="L462">        StringBuilder csv = new StringBuilder(</span>
+                &quot;entry_id,journal_id,entry_type,amount,currency,status,effective_date,created_by,running_balance\n&quot;);
+<span class="fc bfc" id="L464" title="All 2 branches covered.">        for (StatementRow row : rows) {</span>
+<span class="fc" id="L465">            csv.append(row.entryId()).append(&quot;,&quot;)</span>
+<span class="fc" id="L466">                    .append(row.journalId()).append(&quot;,&quot;)</span>
+<span class="fc" id="L467">                    .append(row.entryType()).append(&quot;,&quot;)</span>
+<span class="fc" id="L468">                    .append(row.amount()).append(&quot;,&quot;)</span>
+<span class="fc" id="L469">                    .append(row.currency()).append(&quot;,&quot;)</span>
+<span class="fc" id="L470">                    .append(row.status()).append(&quot;,&quot;)</span>
+<span class="fc" id="L471">                    .append(row.effectiveDate()).append(&quot;,&quot;)</span>
+<span class="fc" id="L472">                    .append(row.createdBy()).append(&quot;,&quot;)</span>
+<span class="fc" id="L473">                    .append(row.runningBalance()).append(&quot;\n&quot;);</span>
+<span class="fc" id="L474">        }</span>
+<span class="fc" id="L475">        return csv.toString();</span>
+    }
+
+    private List&lt;StatementRow&gt; computeStatementWithRunningBalance(Account account,
+                                                                  ZonedDateTime from,
+                                                                  ZonedDateTime to) {
+<span class="fc" id="L481">        List&lt;LedgerEntry&gt; chronological = repository.findByAccount_IdOrderByEffectiveDateAsc(account.getId());</span>
+<span class="pc bpc" id="L482" title="3 of 4 branches missed.">        boolean normalDebit = &quot;Asset&quot;.equals(account.getAccountType()) || &quot;Expense&quot;.equals(account.getAccountType());</span>
+<span class="fc" id="L483">        BigDecimal running = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);</span>
+<span class="fc" id="L484">        List&lt;StatementRow&gt; filtered = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L486" title="All 2 branches covered.">        for (LedgerEntry e : chronological) {</span>
+<span class="fc bfc" id="L487" title="All 2 branches covered.">            BigDecimal delta = (normalDebit == &quot;DEBIT&quot;.equals(e.getEntryType()))</span>
+<span class="fc" id="L488">                    ? e.getAmount() : e.getAmount().negate();</span>
+<span class="fc" id="L489">            running = running.add(delta);</span>
+
+<span class="pc bpc" id="L491" title="2 of 4 branches missed.">            boolean afterStart = (from == null) || !e.getEffectiveDate().isBefore(from);</span>
+<span class="pc bpc" id="L492" title="2 of 4 branches missed.">            boolean beforeEnd = (to == null) || !e.getEffectiveDate().isAfter(to);</span>
+<span class="pc bpc" id="L493" title="2 of 4 branches missed.">            if (afterStart &amp;&amp; beforeEnd) {</span>
+<span class="fc" id="L494">                filtered.add(new StatementRow(</span>
+<span class="fc" id="L495">                        e.getEntryId().toString(),</span>
+<span class="fc" id="L496">                        e.getJournalId().toString(),</span>
+<span class="fc" id="L497">                        e.getEntryType(),</span>
+<span class="fc" id="L498">                        e.getAmount(),</span>
+<span class="fc" id="L499">                        e.getCurrency().trim(),</span>
+<span class="fc" id="L500">                        e.getStatus(),</span>
+<span class="fc" id="L501">                        e.getEffectiveDate().toString(),</span>
+<span class="fc" id="L502">                        e.getCreatedBy(),</span>
+                        running
+                ));
+            }
+<span class="fc" id="L506">        }</span>
+<span class="fc" id="L507">        return filtered;</span>
+    }
+
+    public List&lt;String&gt; getLedgerPartitionNames() {
+<span class="fc" id="L511">        return jdbcTemplate.queryForList(</span>
+                &quot;SELECT c.relname FROM pg_inherits i &quot; +
+                        &quot;JOIN pg_class p ON i.inhparent = p.oid &quot; +
+                        &quot;JOIN pg_class c ON i.inhrelid = c.oid &quot; +
+                        &quot;WHERE p.relname = 'ledger_entries' ORDER BY c.relname&quot;,
+                String.class);
+    }
+
+    public String getLastTrialBalanceCheckAt() {
+<span class="pc bpc" id="L520" title="1 of 2 branches missed.">        if (lastTrialBalanceCheckAt == null) {</span>
+<span class="nc" id="L521">            getTrialBalance(null, null);</span>
+        }
+<span class="fc" id="L523">        return lastTrialBalanceCheckAt.toString();</span>
     }
 
     public Map&lt;String, Object&gt; getIncomeStatement() {
-<span class="nc" id="L364">        return getIncomeStatement(ZonedDateTime.now().minusYears(10), ZonedDateTime.now().plusYears(1), &quot;INR&quot;);</span>
+<span class="nc" id="L527">        return getIncomeStatement(ZonedDateTime.now().minusYears(10), ZonedDateTime.now().plusYears(1), &quot;INR&quot;);</span>
     }
 
     public Map&lt;String, Object&gt; getIncomeStatement(ZonedDateTime from, ZonedDateTime to, String currency) {
-<span class="nc bnc" id="L368" title="All 4 branches missed.">        String curr = (currency == null || currency.isBlank()) ? &quot;INR&quot; : currency.trim().toUpperCase();</span>
-<span class="nc bnc" id="L369" title="All 2 branches missed.">        ZonedDateTime start = (from == null) ? ZonedDateTime.now().minusYears(10) : from;</span>
-<span class="nc bnc" id="L370" title="All 2 branches missed.">        ZonedDateTime end = (to == null) ? ZonedDateTime.now().plusYears(1) : to;</span>
+<span class="pc bpc" id="L531" title="2 of 4 branches missed.">        String curr = (currency == null || currency.isBlank()) ? &quot;INR&quot; : currency.trim().toUpperCase();</span>
+<span class="pc bpc" id="L532" title="1 of 2 branches missed.">        ZonedDateTime start = (from == null) ? ZonedDateTime.now().minusYears(10) : from;</span>
+<span class="pc bpc" id="L533" title="1 of 2 branches missed.">        ZonedDateTime end = (to == null) ? ZonedDateTime.now().plusYears(1) : to;</span>
 
-<span class="nc" id="L372">        BigDecimal totalRevenue = BigDecimal.ZERO;</span>
-<span class="nc" id="L373">        BigDecimal totalExpenses = BigDecimal.ZERO;</span>
+<span class="fc" id="L535">        BigDecimal totalRevenue = BigDecimal.ZERO;</span>
+<span class="fc" id="L536">        BigDecimal totalExpenses = BigDecimal.ZERO;</span>
 
-<span class="nc bnc" id="L375" title="All 2 branches missed.">        for (Object[] row : repository.getAccountTypeTotalsByPeriod(start, end, curr)) {</span>
-<span class="nc" id="L376">            String type = (String) row[0];</span>
-<span class="nc" id="L377">            BigDecimal debits = (BigDecimal) row[1];</span>
-<span class="nc" id="L378">            BigDecimal credits = (BigDecimal) row[2];</span>
-<span class="nc bnc" id="L379" title="All 2 branches missed.">            if (&quot;Revenue&quot;.equalsIgnoreCase(type)) {</span>
-<span class="nc" id="L380">                totalRevenue = credits.subtract(debits);</span>
-<span class="nc bnc" id="L381" title="All 2 branches missed.">            } else if (&quot;Expense&quot;.equalsIgnoreCase(type)) {</span>
-<span class="nc" id="L382">                totalExpenses = debits.subtract(credits);</span>
+<span class="fc bfc" id="L538" title="All 2 branches covered.">        for (Object[] row : repository.getAccountTypeTotalsByPeriod(start, end, curr)) {</span>
+<span class="fc" id="L539">            String type = (String) row[0];</span>
+<span class="fc" id="L540">            BigDecimal debits = (BigDecimal) row[1];</span>
+<span class="fc" id="L541">            BigDecimal credits = (BigDecimal) row[2];</span>
+<span class="fc bfc" id="L542" title="All 2 branches covered.">            if (&quot;Revenue&quot;.equalsIgnoreCase(type)) {</span>
+<span class="fc" id="L543">                totalRevenue = credits.subtract(debits);</span>
+<span class="fc bfc" id="L544" title="All 2 branches covered.">            } else if (&quot;Expense&quot;.equalsIgnoreCase(type)) {</span>
+<span class="fc" id="L545">                totalExpenses = debits.subtract(credits);</span>
             }
-<span class="nc" id="L384">        }</span>
+<span class="fc" id="L547">        }</span>
 
-<span class="nc" id="L386">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
-<span class="nc" id="L387">        report.put(&quot;report&quot;, &quot;Income Statement (P&amp;L)&quot;);</span>
-<span class="nc" id="L388">        report.put(&quot;currency&quot;, curr);</span>
-<span class="nc" id="L389">        report.put(&quot;from&quot;, start.toString());</span>
-<span class="nc" id="L390">        report.put(&quot;to&quot;, end.toString());</span>
-<span class="nc" id="L391">        report.put(&quot;totalRevenue&quot;, totalRevenue);</span>
-<span class="nc" id="L392">        report.put(&quot;totalExpenses&quot;, totalExpenses);</span>
-<span class="nc" id="L393">        report.put(&quot;netIncome&quot;, totalRevenue.subtract(totalExpenses));</span>
-<span class="nc" id="L394">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
-<span class="nc" id="L395">        return report;</span>
+<span class="fc" id="L549">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L550">        report.put(&quot;report&quot;, &quot;Income Statement (P&amp;L)&quot;);</span>
+<span class="fc" id="L551">        report.put(&quot;currency&quot;, curr);</span>
+<span class="fc" id="L552">        report.put(&quot;from&quot;, start.toString());</span>
+<span class="fc" id="L553">        report.put(&quot;to&quot;, end.toString());</span>
+<span class="fc" id="L554">        report.put(&quot;totalRevenue&quot;, totalRevenue);</span>
+<span class="fc" id="L555">        report.put(&quot;totalExpenses&quot;, totalExpenses);</span>
+<span class="fc" id="L556">        report.put(&quot;netIncome&quot;, totalRevenue.subtract(totalExpenses));</span>
+<span class="fc" id="L557">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L558">        return report;</span>
     }
 
     public Map&lt;String, Object&gt; getBalanceSheet() {
-<span class="fc" id="L399">        return getBalanceSheet(ZonedDateTime.now().plusYears(1), &quot;INR&quot;);</span>
+<span class="fc" id="L562">        return getBalanceSheet(ZonedDateTime.now().plusYears(1), &quot;INR&quot;);</span>
     }
 
     public Map&lt;String, Object&gt; getBalanceSheet(ZonedDateTime asOfDate, String currency) {
-<span class="pc bpc" id="L403" title="2 of 4 branches missed.">        String curr = (currency == null || currency.isBlank()) ? &quot;INR&quot; : currency.trim().toUpperCase();</span>
-<span class="pc bpc" id="L404" title="1 of 2 branches missed.">        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;</span>
+<span class="pc bpc" id="L566" title="2 of 4 branches missed.">        String curr = (currency == null || currency.isBlank()) ? &quot;INR&quot; : currency.trim().toUpperCase();</span>
+<span class="pc bpc" id="L567" title="1 of 2 branches missed.">        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;</span>
 
-<span class="fc" id="L406">        BigDecimal assets = BigDecimal.ZERO;</span>
-<span class="fc" id="L407">        BigDecimal liabilities = BigDecimal.ZERO;</span>
-<span class="fc" id="L408">        BigDecimal equity = BigDecimal.ZERO;</span>
-<span class="fc" id="L409">        BigDecimal revenue = BigDecimal.ZERO;</span>
-<span class="fc" id="L410">        BigDecimal expenses = BigDecimal.ZERO;</span>
+<span class="fc" id="L569">        BigDecimal assets = BigDecimal.ZERO;</span>
+<span class="fc" id="L570">        BigDecimal liabilities = BigDecimal.ZERO;</span>
+<span class="fc" id="L571">        BigDecimal equity = BigDecimal.ZERO;</span>
+<span class="fc" id="L572">        BigDecimal revenue = BigDecimal.ZERO;</span>
+<span class="fc" id="L573">        BigDecimal expenses = BigDecimal.ZERO;</span>
 
-<span class="fc bfc" id="L412" title="All 2 branches covered.">        for (Object[] row : repository.getAccountTypeTotalsAsOf(cutoff, curr)) {</span>
-<span class="fc" id="L413">            String type = (String) row[0];</span>
-<span class="fc" id="L414">            BigDecimal debits = (BigDecimal) row[1];</span>
-<span class="fc" id="L415">            BigDecimal credits = (BigDecimal) row[2];</span>
-<span class="pc bpc" id="L416" title="2 of 6 branches missed.">            switch (type) {</span>
-<span class="fc" id="L417">                case &quot;Asset&quot; -&gt; assets = debits.subtract(credits);</span>
-<span class="fc" id="L418">                case &quot;Liability&quot; -&gt; liabilities = credits.subtract(debits);</span>
-<span class="nc" id="L419">                case &quot;Equity&quot; -&gt; equity = credits.subtract(debits);</span>
-<span class="fc" id="L420">                case &quot;Revenue&quot; -&gt; revenue = credits.subtract(debits);</span>
-<span class="fc" id="L421">                case &quot;Expense&quot; -&gt; expenses = debits.subtract(credits);</span>
+<span class="fc bfc" id="L575" title="All 2 branches covered.">        for (Object[] row : repository.getAccountTypeTotalsAsOf(cutoff, curr)) {</span>
+<span class="fc" id="L576">            String type = (String) row[0];</span>
+<span class="fc" id="L577">            BigDecimal debits = (BigDecimal) row[1];</span>
+<span class="fc" id="L578">            BigDecimal credits = (BigDecimal) row[2];</span>
+<span class="pc bpc" id="L579" title="2 of 6 branches missed.">            switch (type) {</span>
+<span class="fc" id="L580">                case &quot;Asset&quot; -&gt; assets = debits.subtract(credits);</span>
+<span class="fc" id="L581">                case &quot;Liability&quot; -&gt; liabilities = credits.subtract(debits);</span>
+<span class="nc" id="L582">                case &quot;Equity&quot; -&gt; equity = credits.subtract(debits);</span>
+<span class="fc" id="L583">                case &quot;Revenue&quot; -&gt; revenue = credits.subtract(debits);</span>
+<span class="fc" id="L584">                case &quot;Expense&quot; -&gt; expenses = debits.subtract(credits);</span>
             }
-<span class="fc" id="L423">        }</span>
+<span class="fc" id="L586">        }</span>
 
-<span class="fc" id="L425">        BigDecimal netIncome = revenue.subtract(expenses);</span>
-<span class="fc" id="L426">        BigDecimal totalEquityWithNetIncome = equity.add(netIncome);</span>
-<span class="fc" id="L427">        BigDecimal liabilitiesPlusEquity = liabilities.add(totalEquityWithNetIncome);</span>
+<span class="fc" id="L588">        BigDecimal netIncome = revenue.subtract(expenses);</span>
+<span class="fc" id="L589">        BigDecimal totalEquityWithNetIncome = equity.add(netIncome);</span>
+<span class="fc" id="L590">        BigDecimal liabilitiesPlusEquity = liabilities.add(totalEquityWithNetIncome);</span>
 
-<span class="fc" id="L429">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L430">        report.put(&quot;report&quot;, &quot;Balance Sheet (A = L + E)&quot;);</span>
-<span class="fc" id="L431">        report.put(&quot;currency&quot;, curr);</span>
-<span class="fc" id="L432">        report.put(&quot;asOfDate&quot;, cutoff.toString());</span>
-<span class="fc" id="L433">        report.put(&quot;totalAssets&quot;, assets);</span>
-<span class="fc" id="L434">        report.put(&quot;totalLiabilities&quot;, liabilities);</span>
-<span class="fc" id="L435">        report.put(&quot;totalEquity&quot;, totalEquityWithNetIncome);</span>
-<span class="fc" id="L436">        report.put(&quot;liabilitiesPlusEquity&quot;, liabilitiesPlusEquity);</span>
-<span class="pc bpc" id="L437" title="1 of 2 branches missed.">        report.put(&quot;accountingEquationBalanced&quot;, assets.compareTo(liabilitiesPlusEquity) == 0);</span>
-<span class="fc" id="L438">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
-<span class="fc" id="L439">        return report;</span>
+<span class="fc" id="L592">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L593">        report.put(&quot;report&quot;, &quot;Balance Sheet (A = L + E)&quot;);</span>
+<span class="fc" id="L594">        report.put(&quot;currency&quot;, curr);</span>
+<span class="fc" id="L595">        report.put(&quot;asOfDate&quot;, cutoff.toString());</span>
+<span class="fc" id="L596">        report.put(&quot;totalAssets&quot;, assets);</span>
+<span class="fc" id="L597">        report.put(&quot;totalLiabilities&quot;, liabilities);</span>
+<span class="fc" id="L598">        report.put(&quot;totalEquity&quot;, totalEquityWithNetIncome);</span>
+<span class="fc" id="L599">        report.put(&quot;liabilitiesPlusEquity&quot;, liabilitiesPlusEquity);</span>
+<span class="pc bpc" id="L600" title="1 of 2 branches missed.">        report.put(&quot;accountingEquationBalanced&quot;, assets.compareTo(liabilitiesPlusEquity) == 0);</span>
+<span class="fc" id="L601">        report.put(&quot;generatedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L602">        return report;</span>
     }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

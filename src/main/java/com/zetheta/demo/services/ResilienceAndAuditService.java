@@ -5,7 +5,6 @@ import com.zetheta.demo.models.ExchangeRateSnapshot;
 import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,11 +43,7 @@ public class ResilienceAndAuditService {
         circuitState.put("BANK_TRANSFER_API", "CLOSED");
     }
 
-    // 1. Nightly & On-Demand Unrealised FX P&L Revaluation (Section A3.3)
-    @Scheduled(cron = "0 55 23 * * *")
-    public void runNightlyScheduledFxRevaluation() {
-        runUnrealisedFxRevaluation(new BigDecimal("83.00000000"));
-    }
+    // 1. On-Demand & Scheduled Unrealised FX P&L Revaluation (invoked via FxRevaluationScheduler so @Transactional applies)
     @Transactional
     public Map<String, Object> runUnrealisedFxRevaluation(BigDecimal baselineUsdRate) {
         ExchangeRateSnapshot closing = exchangeRateService.getValidRate("USD", "INR");
@@ -56,15 +51,33 @@ public class ResilienceAndAuditService {
 
         BigDecimal usdBalance = jdbcTemplate.queryForObject(
                 "SELECT COALESCE(SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE -amount END), 0) " +
-                        "FROM ledger_entries WHERE account_id = ?",
+                        "FROM ledger_entries WHERE account_id = ? AND TRIM(currency) = 'USD' AND status = 'POSTED'",
                 BigDecimal.class, usdWallet.getId());
         if (usdBalance == null) {
             usdBalance = BigDecimal.ZERO;
         }
 
-        BigDecimal base = (baselineUsdRate == null) ? new BigDecimal("83.00000000") : baselineUsdRate;
+        BigDecimal base;
+        if (baselineUsdRate != null) {
+            base = baselineUsdRate;
+        } else {
+            List<BigDecimal> savedRates = jdbcTemplate.queryForList(
+                    "SELECT last_revalued_rate FROM fx_revaluation_state WHERE currency_pair = 'USD/INR'",
+                    BigDecimal.class);
+            if (!savedRates.isEmpty()) {
+                base = savedRates.getFirst();
+            } else {
+                // First run with no prior state: use previous snapshot if available, otherwise initialize at closing rate (delta = 0)
+                List<BigDecimal> priorSnapshots = jdbcTemplate.queryForList(
+                        "SELECT rate FROM exchange_rate_snapshots WHERE base_currency = 'USD' AND quote_currency = 'INR' " +
+                                "ORDER BY captured_at DESC OFFSET 1 LIMIT 1",
+                        BigDecimal.class);
+                base = priorSnapshots.isEmpty() ? closing.getRate() : priorSnapshots.getFirst();
+            }
+        }
+
         BigDecimal rateDiff = closing.getRate().subtract(base);
-        BigDecimal unrealisedPnl = usdBalance.abs().multiply(rateDiff).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal unrealisedPnl = usdBalance.multiply(rateDiff).setScale(4, RoundingMode.HALF_UP);
 
         UUID journalId = null;
         String pnlType = "NONE";
@@ -73,16 +86,22 @@ public class ResilienceAndAuditService {
             pnlType = "UNREALISED_GAIN";
             journalId = ledgerService.postTransaction(Arrays.asList(
                     buildEntry("1004", "DEBIT", unrealisedPnl, "INR", "FX_REVAL_JOB"),
-                    buildEntry("4003", "CREDIT", unrealisedPnl, "INR", "FX_REVAL_JOB")
+                    buildEntry("4004", "CREDIT", unrealisedPnl, "INR", "FX_REVAL_JOB")
             ));
         } else if (unrealisedPnl.compareTo(BigDecimal.ZERO) < 0) {
             pnlType = "UNREALISED_LOSS";
             BigDecimal absLoss = unrealisedPnl.abs();
             journalId = ledgerService.postTransaction(Arrays.asList(
-                    buildEntry("5010", "DEBIT", absLoss, "INR", "FX_REVAL_JOB"),
+                    buildEntry("5011", "DEBIT", absLoss, "INR", "FX_REVAL_JOB"),
                     buildEntry("1004", "CREDIT", absLoss, "INR", "FX_REVAL_JOB")
             ));
         }
+
+        jdbcTemplate.update(
+                "INSERT INTO fx_revaluation_state (currency_pair, last_revalued_rate, last_revalued_at) " +
+                        "VALUES ('USD/INR', ?, NOW()) " +
+                        "ON CONFLICT (currency_pair) DO UPDATE SET last_revalued_rate = EXCLUDED.last_revalued_rate, last_revalued_at = NOW()",
+                closing.getRate());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("job", "UNREALISED_FX_REVALUATION");

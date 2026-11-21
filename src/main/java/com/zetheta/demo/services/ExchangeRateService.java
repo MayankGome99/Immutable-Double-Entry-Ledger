@@ -110,36 +110,56 @@ public class ExchangeRateService {
 
     public Map<String, Object> getCurrencyExposureReport() {
         List<Account> allAccounts = accountRepository.findAll();
-        Map<String, BigDecimal> totalsByCurrency = new LinkedHashMap<>();
+        Map<String, BigDecimal> assetsByCurrency = new LinkedHashMap<>();
+        Map<String, BigDecimal> liabilitiesByCurrency = new LinkedHashMap<>();
 
+        // Net FX position = Assets - Liabilities per currency (excludes internal FX clearing transit 1005 and Equity/P&L)
         for (Account acc : allAccounts) {
-            String curr = acc.getCurrency().trim();
-            BigDecimal bal = entryRepository.calculateBalance(acc.getId());
-            totalsByCurrency.merge(curr, bal, BigDecimal::add);
+            String type = acc.getAccountType();
+            if (!"Asset".equalsIgnoreCase(type) && !"Liability".equalsIgnoreCase(type)) {
+                continue;
+            }
+            if ("1005".equals(acc.getAccountCode())) {
+                continue;
+            }
+            String curr = acc.getCurrency().trim().toUpperCase();
+            BigDecimal bal = entryRepository.calculateBalanceByCurrency(acc.getId(), curr);
+            if ("Asset".equalsIgnoreCase(type)) {
+                assetsByCurrency.merge(curr, bal, BigDecimal::add);
+                liabilitiesByCurrency.putIfAbsent(curr, BigDecimal.ZERO);
+            } else {
+                liabilitiesByCurrency.merge(curr, bal, BigDecimal::add);
+                assetsByCurrency.putIfAbsent(curr, BigDecimal.ZERO);
+            }
         }
 
         List<Object> exposures = new ArrayList<>();
         BigDecimal grandTotalInr = BigDecimal.ZERO;
 
-        for (Map.Entry<String, BigDecimal> item : totalsByCurrency.entrySet()) {
-            String currency = item.getKey();
-            BigDecimal balance = item.getValue();
-            BigDecimal inrEquivalent = balance;
+        for (String currency : assetsByCurrency.keySet()) {
+            BigDecimal assets = assetsByCurrency.getOrDefault(currency, BigDecimal.ZERO);
+            BigDecimal liabilities = liabilitiesByCurrency.getOrDefault(currency, BigDecimal.ZERO);
+            BigDecimal netExposure = assets.subtract(liabilities);
+            BigDecimal inrEquivalent = netExposure;
             BigDecimal appliedRate = BigDecimal.ONE;
 
             if (!"INR".equals(currency)) {
-                Optional<ExchangeRateSnapshot> snap = rateRepository
-                        .findTopByBaseCurrencyAndQuoteCurrencyOrderByCapturedAtDesc(currency, "INR");
-                if (snap.isPresent()) {
-                    appliedRate = snap.get().getRate();
-                    inrEquivalent = balance.multiply(appliedRate).setScale(4, RoundingMode.HALF_UP);
+                if (netExposure.compareTo(BigDecimal.ZERO) != 0) {
+                    ExchangeRateSnapshot validSnap = getValidRate(currency, "INR");
+                    appliedRate = validSnap.getRate();
+                    inrEquivalent = netExposure.multiply(appliedRate).setScale(4, RoundingMode.HALF_UP);
+                } else {
+                    appliedRate = BigDecimal.ZERO;
+                    inrEquivalent = BigDecimal.ZERO;
                 }
             }
             grandTotalInr = grandTotalInr.add(inrEquivalent);
 
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("currency", currency);
-            row.put("netBalance", balance);
+            row.put("assets", assets);
+            row.put("liabilities", liabilities);
+            row.put("netExposure", netExposure);
             row.put("rateToInr", appliedRate);
             row.put("inrEquivalent", inrEquivalent);
             exposures.add(row);

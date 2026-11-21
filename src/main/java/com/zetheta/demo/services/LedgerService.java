@@ -22,9 +22,22 @@ import java.util.*;
 public class LedgerService {
     private static final long CHAIN_LOCK_KEY = 424242L;
 
+    public record StatementRow(
+            String entryId,
+            String journalId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            String status,
+            String effectiveDate,
+            String createdBy,
+            BigDecimal runningBalance
+    ) {}
+
     private final LedgerEntryRepository repository;
     private final AccountRepository accountRepository;
     private final JdbcTemplate jdbcTemplate;
+    private volatile Instant lastTrialBalanceCheckAt;
 
     public LedgerService(LedgerEntryRepository repository,
                          AccountRepository accountRepository,
@@ -51,7 +64,6 @@ public class LedgerService {
             if (entry.getAmount() == null || entry.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
                 throw new IllegalArgumentException("Transaction failed: Entry amount must be strictly greater than zero.");
             }
-            // Normalize scale to match PostgreSQL NUMERIC(19,4)
             BigDecimal scaledAmount = entry.getAmount().setScale(4, RoundingMode.HALF_UP);
             entry.setAmount(scaledAmount);
 
@@ -99,8 +111,7 @@ public class LedgerService {
         ZonedDateTime now = ZonedDateTime.now().truncatedTo(ChronoUnit.MICROS);
         Instant effectiveInstant = now.toInstant();
 
-        // Track in-flight balance adjustments per (account, currency)
-        Map<String, BigDecimal> runningBalances = new HashMap<>();
+        Map<UUID, BigDecimal> runningBalances = new HashMap<>();
 
         for (LedgerEntry entry : entries) {
             Account account = lockedAccounts.get(entry.getAccount().getId());
@@ -108,9 +119,8 @@ public class LedgerService {
 
             // Enforce account currency match
             String accountCurrency = account.getCurrency().trim().toUpperCase();
-            String entryCurrency = entry.getCurrency();
-            if (!accountCurrency.equals(entryCurrency)) {
-                throw new IllegalArgumentException("Currency mismatch: Entry currency " + entryCurrency
+            if (!accountCurrency.equals(entry.getCurrency())) {
+                throw new IllegalArgumentException("Currency mismatch: Entry currency " + entry.getCurrency()
                         + " does not match account " + account.getAccountCode() + " currency " + accountCurrency);
             }
 
@@ -123,10 +133,10 @@ public class LedgerService {
                 String actorKey = (entry.getCreatedBy() == null || entry.getCreatedBy().isBlank())
                         ? "SYSTEM" : entry.getCreatedBy().trim();
                 String reqHash = HashUtils.sha256(
-                        account.getId() + "|" + entry.getEntryType() + "|" + entry.getAmount() + "|" + entryCurrency);
+                        account.getId() + "|" + entry.getEntryType() + "|" + entry.getAmount() + "|" + entry.getCurrency());
                 int claimed = jdbcTemplate.update(
                         "INSERT INTO idempotency_keys (idempotency_key, user_id, endpoint, request_hash, status, response_status, response_body, expires_at) " +
-                                "VALUES (?, ?, '/api/v1/ledger/transactions', ?, 'COMPLETED', 200, ?, NOW() + INTERVAL '24 hours') " +
+                                "VALUES (?, ?, '/api/v1/transactions', ?, 'COMPLETED', 200, ?, NOW() + INTERVAL '24 hours') " +
                                 "ON CONFLICT (user_id, idempotency_key) DO NOTHING",
                         idemKey, actorKey, reqHash, generatedJournalId.toString());
                 if (claimed == 0 || repository.existsByIdempotencyKey(idemKey)) {
@@ -135,9 +145,8 @@ public class LedgerService {
             }
 
             // Per-currency balance sufficiency check
-            String balKey = account.getId() + "|" + entryCurrency;
             BigDecimal currentBalance = runningBalances.computeIfAbsent(
-                    balKey, k -> repository.calculateBalanceByCurrency(account.getId(), entryCurrency));
+                    account.getId(), id -> repository.calculateBalanceByCurrency(id, accountCurrency));
 
             boolean isAssetDecrease = "Asset".equals(account.getAccountType()) && "CREDIT".equals(entry.getEntryType());
             boolean isLiabilityDecrease = "Liability".equals(account.getAccountType()) && "DEBIT".equals(entry.getEntryType());
@@ -145,15 +154,14 @@ public class LedgerService {
             if (isAssetDecrease || isLiabilityDecrease) {
                 if (currentBalance.compareTo(entry.getAmount()) < 0) {
                     throw new IllegalArgumentException("Transaction failed: Insufficient balance in account "
-                            + account.getAccountCode() + " (" + entryCurrency + "). Available: " + currentBalance);
+                            + account.getAccountCode() + " (" + accountCurrency + "). Available: " + currentBalance);
                 }
             }
 
-            // Update in-memory running balance for this (account, currency)
             boolean normalDebit = "Asset".equals(account.getAccountType()) || "Expense".equals(account.getAccountType());
             BigDecimal delta = (normalDebit == "DEBIT".equals(entry.getEntryType()))
                     ? entry.getAmount() : entry.getAmount().negate();
-            runningBalances.put(balKey, currentBalance.add(delta));
+            runningBalances.put(account.getId(), currentBalance.add(delta));
 
             entry.setJournalId(generatedJournalId);
             entry.setEffectiveDate(now);
@@ -172,7 +180,7 @@ public class LedgerService {
                     account.getId(),
                     entry.getEntryType(),
                     entry.getAmount(),
-                    entryCurrency,
+                    entry.getCurrency(),
                     effectiveInstant,
                     entry.getCreatedBy()
             );
@@ -184,19 +192,14 @@ public class LedgerService {
 
         repository.saveAllAndFlush(entries);
 
-        // 4. Refresh materialized balance_snapshots cache for each account's base currency
-        for (Map.Entry<String, BigDecimal> bal : runningBalances.entrySet()) {
-            String[] parts = bal.getKey().split("\\|");
-            UUID accId = UUID.fromString(parts[0]);
-            String curr = parts[1];
-            Account acc = lockedAccounts.get(accId);
-            if (curr.equalsIgnoreCase(acc.getCurrency().trim())) {
-                jdbcTemplate.update(
-                        "INSERT INTO balance_snapshots (account_id, currency, balance, updated_at) " +
-                                "VALUES (?, ?, ?, NOW()) " +
-                                "ON CONFLICT (account_id) DO UPDATE SET balance = EXCLUDED.balance, updated_at = NOW()",
-                        accId, acc.getCurrency().trim(), bal.getValue());
-            }
+        // 4. Refresh materialized balance_snapshots cache
+        for (Map.Entry<UUID, BigDecimal> bal : runningBalances.entrySet()) {
+            Account acc = lockedAccounts.get(bal.getKey());
+            jdbcTemplate.update(
+                    "INSERT INTO balance_snapshots (account_id, currency, balance, updated_at) " +
+                            "VALUES (?, ?, ?, NOW()) " +
+                            "ON CONFLICT (account_id) DO UPDATE SET balance = EXCLUDED.balance, updated_at = NOW()",
+                    bal.getKey(), acc.getCurrency().trim(), bal.getValue());
         }
 
         return generatedJournalId;
@@ -213,12 +216,11 @@ public class LedgerService {
 
     @Transactional
     public UUID revertTransaction(UUID originalJournalId) {
-        // Lock per originalJournalId so concurrent reversals serialize safely
         jdbcTemplate.queryForList("SELECT pg_advisory_xact_lock(hashtext(?))", "REV:" + originalJournalId);
 
         int claimed = jdbcTemplate.update(
                 "INSERT INTO idempotency_keys (idempotency_key, user_id, endpoint, request_hash, status, response_status, response_body, expires_at) " +
-                        "VALUES (?, 'REVERSAL_ENGINE', '/api/v1/ledger/reversals', ?, 'PROCESSING', 200, 'PENDING', NOW() + INTERVAL '24 hours') " +
+                        "VALUES (?, 'REVERSAL_ENGINE', '/api/v1/reversals', ?, 'PROCESSING', 200, 'PENDING', NOW() + INTERVAL '24 hours') " +
                         "ON CONFLICT (user_id, idempotency_key) DO NOTHING",
                 "REV-" + originalJournalId, HashUtils.sha256(originalJournalId.toString()));
         if (claimed == 0) {
@@ -358,6 +360,167 @@ public class LedgerService {
         debitReceiver.setCreatedBy("SYSTEM_P2P");
 
         return postTransaction(Arrays.asList(creditSender, debitReceiver));
+    }
+
+    public Map<String, Object> getTrialBalance(ZonedDateTime asOfDate, String currencyFilter) {
+        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;
+        String filter = (currencyFilter == null || currencyFilter.isBlank())
+                ? null : currencyFilter.trim().toUpperCase();
+
+        List<Object[]> rows = repository.generateTrialBalanceAsOf(cutoff);
+        List<Object> accounts = new ArrayList<>();
+        Map<String, BigDecimal> debitsByCurr = new LinkedHashMap<>();
+        Map<String, BigDecimal> creditsByCurr = new LinkedHashMap<>();
+
+        for (Object[] row : rows) {
+            String curr = row[3].toString().trim().toUpperCase();
+            if (filter != null && !filter.equals(curr)) {
+                continue;
+            }
+            BigDecimal debits = (BigDecimal) row[4];
+            BigDecimal credits = (BigDecimal) row[5];
+            BigDecimal netBalance = (BigDecimal) row[6];
+
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("accountCode", row[0]);
+            item.put("accountName", row[1]);
+            item.put("accountType", row[2]);
+            item.put("currency", curr);
+            item.put("totalDebits", debits);
+            item.put("totalCredits", credits);
+            item.put("netBalance", netBalance);
+            accounts.add(item);
+
+            debitsByCurr.merge(curr, debits, BigDecimal::add);
+            creditsByCurr.merge(curr, credits, BigDecimal::add);
+        }
+
+        List<Object> currencySummaries = new ArrayList<>();
+        boolean allBalanced = true;
+        for (String curr : debitsByCurr.keySet()) {
+            BigDecimal d = debitsByCurr.getOrDefault(curr, BigDecimal.ZERO);
+            BigDecimal c = creditsByCurr.getOrDefault(curr, BigDecimal.ZERO);
+            boolean balanced = d.compareTo(c) == 0;
+            if (!balanced) {
+                allBalanced = false;
+            }
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("currency", curr);
+            summary.put("totalDebits", d);
+            summary.put("totalCredits", c);
+            summary.put("difference", d.subtract(c));
+            summary.put("balanced", balanced);
+            currencySummaries.add(summary);
+        }
+
+        this.lastTrialBalanceCheckAt = Instant.now();
+
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("report", "Trial Balance");
+        report.put("asOfDate", cutoff.toString());
+        report.put("currency", filter == null ? "ALL" : filter);
+        report.put("accounts", accounts);
+        report.put("currencySummaries", currencySummaries);
+        report.put("balanced", allBalanced);
+        report.put("generatedAt", ZonedDateTime.now().toString());
+        return report;
+    }
+
+    public Map<String, Object> getAccountStatement(UUID accountId, ZonedDateTime from, ZonedDateTime to,
+                                                   int page, int size) {
+        Account account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountId));
+
+        List<StatementRow> allMatching = computeStatementWithRunningBalance(account, from, to);
+
+        int safePage = Math.max(0, page);
+        int safeSize = Math.clamp(size, 1, 500);
+        int totalElements = allMatching.size();
+        int totalPages = totalElements == 0 ? 0 : (int) Math.ceil((double) totalElements / safeSize);
+        int fromIdx = Math.min(safePage * safeSize, totalElements);
+        int toIdx = Math.min(fromIdx + safeSize, totalElements);
+
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("accountId", account.getId().toString());
+        response.put("accountCode", account.getAccountCode());
+        response.put("accountName", account.getAccountName());
+        response.put("accountType", account.getAccountType());
+        response.put("currency", account.getCurrency().trim());
+        response.put("page", safePage);
+        response.put("size", safeSize);
+        response.put("totalElements", totalElements);
+        response.put("totalPages", totalPages);
+        response.put("entries", allMatching.subList(fromIdx, toIdx));
+        return response;
+    }
+
+    public String exportAccountStatementCsv(UUID accountId, ZonedDateTime from, ZonedDateTime to) {
+        Account account = accountRepository.findById(accountId)
+                .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountId));
+
+        List<StatementRow> rows = computeStatementWithRunningBalance(account, from, to);
+        StringBuilder csv = new StringBuilder(
+                "entry_id,journal_id,entry_type,amount,currency,status,effective_date,created_by,running_balance\n");
+        for (StatementRow row : rows) {
+            csv.append(row.entryId()).append(",")
+                    .append(row.journalId()).append(",")
+                    .append(row.entryType()).append(",")
+                    .append(row.amount()).append(",")
+                    .append(row.currency()).append(",")
+                    .append(row.status()).append(",")
+                    .append(row.effectiveDate()).append(",")
+                    .append(row.createdBy()).append(",")
+                    .append(row.runningBalance()).append("\n");
+        }
+        return csv.toString();
+    }
+
+    private List<StatementRow> computeStatementWithRunningBalance(Account account,
+                                                                  ZonedDateTime from,
+                                                                  ZonedDateTime to) {
+        List<LedgerEntry> chronological = repository.findByAccount_IdOrderByEffectiveDateAsc(account.getId());
+        boolean normalDebit = "Asset".equals(account.getAccountType()) || "Expense".equals(account.getAccountType());
+        BigDecimal running = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        List<StatementRow> filtered = new ArrayList<>();
+
+        for (LedgerEntry e : chronological) {
+            BigDecimal delta = (normalDebit == "DEBIT".equals(e.getEntryType()))
+                    ? e.getAmount() : e.getAmount().negate();
+            running = running.add(delta);
+
+            boolean afterStart = (from == null) || !e.getEffectiveDate().isBefore(from);
+            boolean beforeEnd = (to == null) || !e.getEffectiveDate().isAfter(to);
+            if (afterStart && beforeEnd) {
+                filtered.add(new StatementRow(
+                        e.getEntryId().toString(),
+                        e.getJournalId().toString(),
+                        e.getEntryType(),
+                        e.getAmount(),
+                        e.getCurrency().trim(),
+                        e.getStatus(),
+                        e.getEffectiveDate().toString(),
+                        e.getCreatedBy(),
+                        running
+                ));
+            }
+        }
+        return filtered;
+    }
+
+    public List<String> getLedgerPartitionNames() {
+        return jdbcTemplate.queryForList(
+                "SELECT c.relname FROM pg_inherits i " +
+                        "JOIN pg_class p ON i.inhparent = p.oid " +
+                        "JOIN pg_class c ON i.inhrelid = c.oid " +
+                        "WHERE p.relname = 'ledger_entries' ORDER BY c.relname",
+                String.class);
+    }
+
+    public String getLastTrialBalanceCheckAt() {
+        if (lastTrialBalanceCheckAt == null) {
+            getTrialBalance(null, null);
+        }
+        return lastTrialBalanceCheckAt.toString();
     }
 
     public Map<String, Object> getIncomeStatement() {

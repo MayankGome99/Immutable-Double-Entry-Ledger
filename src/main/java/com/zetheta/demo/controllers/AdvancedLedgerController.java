@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/ledger")
+@RequestMapping({"/api/ledger", "/api/v1"})
 public class AdvancedLedgerController {
 
     private final TransactionEngineService transactionEngineService;
@@ -37,14 +37,14 @@ public class AdvancedLedgerController {
     @PostMapping("/refunds/partial")
     public ResponseEntity<Object> processPartialRefund(
             @RequestParam UUID originalJournalId,
-            @RequestParam BigDecimal originalAmount,
-            @RequestParam(defaultValue = "20.00") BigDecimal originalFee,
+            @RequestParam(required = false) BigDecimal originalAmount,
+            @RequestParam(required = false) BigDecimal originalFee,
             @RequestParam BigDecimal refundAmount,
             @RequestParam(defaultValue = "PROPORTIONAL") FeeRefundPolicy feePolicy,
             @RequestHeader("X-Idempotency-Key") String idempotencyKey,
             @RequestParam(defaultValue = "API_USER") String createdBy) {
         Map<String, Object> result = transactionEngineService.processPartialRefund(
-                originalJournalId, originalAmount, originalFee, refundAmount, feePolicy, idempotencyKey, createdBy);
+                originalJournalId, refundAmount, feePolicy, idempotencyKey, createdBy);
         return ResponseEntity.ok(result);
     }
 

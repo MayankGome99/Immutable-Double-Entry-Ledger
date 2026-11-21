@@ -5,7 +5,6 @@ import com.zetheta.demo.models.ExchangeRateSnapshot;
 import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,83 +24,103 @@ public class ResilienceAndAuditService {
     private final ExchangeRateService exchangeRateService;
     private final JdbcTemplate jdbcTemplate;
 
-<span class="fc" id="L28">    private final Map&lt;String, String&gt; circuitState = new ConcurrentHashMap&lt;&gt;();</span>
-<span class="fc" id="L29">    private final Map&lt;String, AtomicInteger&gt; failureCounts = new ConcurrentHashMap&lt;&gt;();</span>
-<span class="fc" id="L30">    private final Map&lt;String, Instant&gt; openedAt = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L27">    private final Map&lt;String, String&gt; circuitState = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L28">    private final Map&lt;String, AtomicInteger&gt; failureCounts = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L29">    private final Map&lt;String, Instant&gt; openedAt = new ConcurrentHashMap&lt;&gt;();</span>
     private static final int FAILURE_THRESHOLD = 5;
     private static final long COOLDOWN_SECONDS = 30;
 
     public ResilienceAndAuditService(AccountRepository accountRepository,
                                      LedgerService ledgerService,
                                      ExchangeRateService exchangeRateService,
-<span class="fc" id="L37">                                     JdbcTemplate jdbcTemplate) {</span>
-<span class="fc" id="L38">        this.accountRepository = accountRepository;</span>
-<span class="fc" id="L39">        this.ledgerService = ledgerService;</span>
-<span class="fc" id="L40">        this.exchangeRateService = exchangeRateService;</span>
-<span class="fc" id="L41">        this.jdbcTemplate = jdbcTemplate;</span>
-<span class="fc" id="L42">        circuitState.put(&quot;FX_RATE_PROVIDER&quot;, &quot;CLOSED&quot;);</span>
-<span class="fc" id="L43">        circuitState.put(&quot;PAYMENT_GATEWAY&quot;, &quot;CLOSED&quot;);</span>
-<span class="fc" id="L44">        circuitState.put(&quot;BANK_TRANSFER_API&quot;, &quot;CLOSED&quot;);</span>
-<span class="fc" id="L45">    }</span>
+<span class="fc" id="L36">                                     JdbcTemplate jdbcTemplate) {</span>
+<span class="fc" id="L37">        this.accountRepository = accountRepository;</span>
+<span class="fc" id="L38">        this.ledgerService = ledgerService;</span>
+<span class="fc" id="L39">        this.exchangeRateService = exchangeRateService;</span>
+<span class="fc" id="L40">        this.jdbcTemplate = jdbcTemplate;</span>
+<span class="fc" id="L41">        circuitState.put(&quot;FX_RATE_PROVIDER&quot;, &quot;CLOSED&quot;);</span>
+<span class="fc" id="L42">        circuitState.put(&quot;PAYMENT_GATEWAY&quot;, &quot;CLOSED&quot;);</span>
+<span class="fc" id="L43">        circuitState.put(&quot;BANK_TRANSFER_API&quot;, &quot;CLOSED&quot;);</span>
+<span class="fc" id="L44">    }</span>
 
-    // 1. Nightly &amp; On-Demand Unrealised FX P&amp;L Revaluation (Section A3.3)
-    @Scheduled(cron = &quot;0 55 23 * * *&quot;)
-    public void runNightlyScheduledFxRevaluation() {
-<span class="nc" id="L50">        runUnrealisedFxRevaluation(new BigDecimal(&quot;83.00000000&quot;));</span>
-<span class="nc" id="L51">    }</span>
+    // 1. On-Demand &amp; Scheduled Unrealised FX P&amp;L Revaluation (invoked via FxRevaluationScheduler so @Transactional applies)
     @Transactional
     public Map&lt;String, Object&gt; runUnrealisedFxRevaluation(BigDecimal baselineUsdRate) {
-<span class="fc" id="L54">        ExchangeRateSnapshot closing = exchangeRateService.getValidRate(&quot;USD&quot;, &quot;INR&quot;);</span>
-<span class="fc" id="L55">        Account usdWallet = findByCode(&quot;1002&quot;);</span>
+<span class="fc" id="L49">        ExchangeRateSnapshot closing = exchangeRateService.getValidRate(&quot;USD&quot;, &quot;INR&quot;);</span>
+<span class="fc" id="L50">        Account usdWallet = findByCode(&quot;1002&quot;);</span>
 
-<span class="fc" id="L57">        BigDecimal usdBalance = jdbcTemplate.queryForObject(</span>
+<span class="fc" id="L52">        BigDecimal usdBalance = jdbcTemplate.queryForObject(</span>
                 &quot;SELECT COALESCE(SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE -amount END), 0) &quot; +
-                        &quot;FROM ledger_entries WHERE account_id = ?&quot;,
-<span class="fc" id="L60">                BigDecimal.class, usdWallet.getId());</span>
-<span class="pc bpc" id="L61" title="1 of 2 branches missed.">        if (usdBalance == null) {</span>
-<span class="nc" id="L62">            usdBalance = BigDecimal.ZERO;</span>
+                        &quot;FROM ledger_entries WHERE account_id = ? AND TRIM(currency) = 'USD' AND status = 'POSTED'&quot;,
+<span class="fc" id="L55">                BigDecimal.class, usdWallet.getId());</span>
+<span class="pc bpc" id="L56" title="1 of 2 branches missed.">        if (usdBalance == null) {</span>
+<span class="nc" id="L57">            usdBalance = BigDecimal.ZERO;</span>
         }
 
-<span class="pc bpc" id="L65" title="1 of 2 branches missed.">        BigDecimal base = (baselineUsdRate == null) ? new BigDecimal(&quot;83.00000000&quot;) : baselineUsdRate;</span>
-<span class="fc" id="L66">        BigDecimal rateDiff = closing.getRate().subtract(base);</span>
-<span class="fc" id="L67">        BigDecimal unrealisedPnl = usdBalance.abs().multiply(rateDiff).setScale(4, RoundingMode.HALF_UP);</span>
+        BigDecimal base;
+<span class="fc bfc" id="L61" title="All 2 branches covered.">        if (baselineUsdRate != null) {</span>
+<span class="fc" id="L62">            base = baselineUsdRate;</span>
+        } else {
+<span class="fc" id="L64">            List&lt;BigDecimal&gt; savedRates = jdbcTemplate.queryForList(</span>
+                    &quot;SELECT last_revalued_rate FROM fx_revaluation_state WHERE currency_pair = 'USD/INR'&quot;,
+                    BigDecimal.class);
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">            if (!savedRates.isEmpty()) {</span>
+<span class="fc" id="L68">                base = savedRates.getFirst();</span>
+            } else {
+                // First run with no prior state: use previous snapshot if available, otherwise initialize at closing rate (delta = 0)
+<span class="nc" id="L71">                List&lt;BigDecimal&gt; priorSnapshots = jdbcTemplate.queryForList(</span>
+                        &quot;SELECT rate FROM exchange_rate_snapshots WHERE base_currency = 'USD' AND quote_currency = 'INR' &quot; +
+                                &quot;ORDER BY captured_at DESC OFFSET 1 LIMIT 1&quot;,
+                        BigDecimal.class);
+<span class="nc bnc" id="L75" title="All 2 branches missed.">                base = priorSnapshots.isEmpty() ? closing.getRate() : priorSnapshots.getFirst();</span>
+            }
+        }
 
-<span class="fc" id="L69">        UUID journalId = null;</span>
-<span class="fc" id="L70">        String pnlType = &quot;NONE&quot;;</span>
+<span class="fc" id="L79">        BigDecimal rateDiff = closing.getRate().subtract(base);</span>
+<span class="fc" id="L80">        BigDecimal unrealisedPnl = usdBalance.multiply(rateDiff).setScale(4, RoundingMode.HALF_UP);</span>
 
-<span class="pc bpc" id="L72" title="1 of 2 branches missed.">        if (unrealisedPnl.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
-<span class="fc" id="L73">            pnlType = &quot;UNREALISED_GAIN&quot;;</span>
-<span class="fc" id="L74">            journalId = ledgerService.postTransaction(Arrays.asList(</span>
-<span class="fc" id="L75">                    buildEntry(&quot;1004&quot;, &quot;DEBIT&quot;, unrealisedPnl, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;),</span>
-<span class="fc" id="L76">                    buildEntry(&quot;4003&quot;, &quot;CREDIT&quot;, unrealisedPnl, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;)</span>
+<span class="fc" id="L82">        UUID journalId = null;</span>
+<span class="fc" id="L83">        String pnlType = &quot;NONE&quot;;</span>
+
+<span class="fc bfc" id="L85" title="All 2 branches covered.">        if (unrealisedPnl.compareTo(BigDecimal.ZERO) &gt; 0) {</span>
+<span class="fc" id="L86">            pnlType = &quot;UNREALISED_GAIN&quot;;</span>
+<span class="fc" id="L87">            journalId = ledgerService.postTransaction(Arrays.asList(</span>
+<span class="fc" id="L88">                    buildEntry(&quot;1004&quot;, &quot;DEBIT&quot;, unrealisedPnl, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;),</span>
+<span class="fc" id="L89">                    buildEntry(&quot;4004&quot;, &quot;CREDIT&quot;, unrealisedPnl, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;)</span>
             ));
-<span class="nc bnc" id="L78" title="All 2 branches missed.">        } else if (unrealisedPnl.compareTo(BigDecimal.ZERO) &lt; 0) {</span>
-<span class="nc" id="L79">            pnlType = &quot;UNREALISED_LOSS&quot;;</span>
-<span class="nc" id="L80">            BigDecimal absLoss = unrealisedPnl.abs();</span>
-<span class="nc" id="L81">            journalId = ledgerService.postTransaction(Arrays.asList(</span>
-<span class="nc" id="L82">                    buildEntry(&quot;5010&quot;, &quot;DEBIT&quot;, absLoss, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;),</span>
-<span class="nc" id="L83">                    buildEntry(&quot;1004&quot;, &quot;CREDIT&quot;, absLoss, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;)</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">        } else if (unrealisedPnl.compareTo(BigDecimal.ZERO) &lt; 0) {</span>
+<span class="nc" id="L92">            pnlType = &quot;UNREALISED_LOSS&quot;;</span>
+<span class="nc" id="L93">            BigDecimal absLoss = unrealisedPnl.abs();</span>
+<span class="nc" id="L94">            journalId = ledgerService.postTransaction(Arrays.asList(</span>
+<span class="nc" id="L95">                    buildEntry(&quot;5011&quot;, &quot;DEBIT&quot;, absLoss, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;),</span>
+<span class="nc" id="L96">                    buildEntry(&quot;1004&quot;, &quot;CREDIT&quot;, absLoss, &quot;INR&quot;, &quot;FX_REVAL_JOB&quot;)</span>
             ));
         }
 
-<span class="fc" id="L87">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L88">        result.put(&quot;job&quot;, &quot;UNREALISED_FX_REVALUATION&quot;);</span>
-<span class="fc" id="L89">        result.put(&quot;usdHoldings&quot;, usdBalance);</span>
-<span class="fc" id="L90">        result.put(&quot;baselineRate&quot;, base);</span>
-<span class="fc" id="L91">        result.put(&quot;closingRate&quot;, closing.getRate());</span>
-<span class="fc" id="L92">        result.put(&quot;pnlType&quot;, pnlType);</span>
-<span class="fc" id="L93">        result.put(&quot;unrealisedPnlInr&quot;, unrealisedPnl);</span>
-<span class="pc bpc" id="L94" title="1 of 2 branches missed.">        result.put(&quot;journalId&quot;, journalId == null ? &quot;NO_MOVEMENT&quot; : journalId.toString());</span>
-<span class="fc" id="L95">        result.put(&quot;executedAt&quot;, ZonedDateTime.now().toString());</span>
-<span class="fc" id="L96">        return result;</span>
+<span class="fc" id="L100">        jdbcTemplate.update(</span>
+                &quot;INSERT INTO fx_revaluation_state (currency_pair, last_revalued_rate, last_revalued_at) &quot; +
+                        &quot;VALUES ('USD/INR', ?, NOW()) &quot; +
+                        &quot;ON CONFLICT (currency_pair) DO UPDATE SET last_revalued_rate = EXCLUDED.last_revalued_rate, last_revalued_at = NOW()&quot;,
+<span class="fc" id="L104">                closing.getRate());</span>
+
+<span class="fc" id="L106">        Map&lt;String, Object&gt; result = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L107">        result.put(&quot;job&quot;, &quot;UNREALISED_FX_REVALUATION&quot;);</span>
+<span class="fc" id="L108">        result.put(&quot;usdHoldings&quot;, usdBalance);</span>
+<span class="fc" id="L109">        result.put(&quot;baselineRate&quot;, base);</span>
+<span class="fc" id="L110">        result.put(&quot;closingRate&quot;, closing.getRate());</span>
+<span class="fc" id="L111">        result.put(&quot;pnlType&quot;, pnlType);</span>
+<span class="fc" id="L112">        result.put(&quot;unrealisedPnlInr&quot;, unrealisedPnl);</span>
+<span class="fc bfc" id="L113" title="All 2 branches covered.">        result.put(&quot;journalId&quot;, journalId == null ? &quot;NO_MOVEMENT&quot; : journalId.toString());</span>
+<span class="fc" id="L114">        result.put(&quot;executedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L115">        return result;</span>
     }
 
     // 2. Audit Anomaly Detection (Day 11 &amp; Wirecard Case Study)
     public Map&lt;String, Object&gt; detectAnomalies(BigDecimal largeThreshold) {
-<span class="pc bpc" id="L101" title="1 of 2 branches missed.">        BigDecimal threshold = (largeThreshold == null) ? new BigDecimal(&quot;10000.00&quot;) : largeThreshold;</span>
+<span class="pc bpc" id="L120" title="1 of 2 branches missed.">        BigDecimal threshold = (largeThreshold == null) ? new BigDecimal(&quot;10000.00&quot;) : largeThreshold;</span>
 
-<span class="fc" id="L103">        List&lt;Object&gt; flagged = new ArrayList&lt;&gt;();</span>
-<span class="fc" id="L104">        jdbcTemplate.query(</span>
+<span class="fc" id="L122">        List&lt;Object&gt; flagged = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L123">        jdbcTemplate.query(</span>
                 &quot;SELECT entry_id, journal_id, entry_type, amount, currency, created_by, posted_at &quot; +
                         &quot;FROM ledger_entries &quot; +
                         &quot;WHERE (amount &gt;= ? AND MOD(amount, 1000) = 0) &quot; +
@@ -109,108 +128,108 @@ public class ResilienceAndAuditService {
                         &quot;OR EXTRACT(HOUR FROM posted_at AT TIME ZONE 'UTC') &lt; 5 &quot; +
                         &quot;ORDER BY posted_at DESC LIMIT 50&quot;,
                 rs -&gt; {
-<span class="fc" id="L112">                    Map&lt;String, Object&gt; row = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L113">                    row.put(&quot;entryId&quot;, rs.getObject(&quot;entry_id&quot;).toString());</span>
-<span class="fc" id="L114">                    row.put(&quot;journalId&quot;, rs.getObject(&quot;journal_id&quot;).toString());</span>
-<span class="fc" id="L115">                    row.put(&quot;entryType&quot;, rs.getString(&quot;entry_type&quot;));</span>
-<span class="fc" id="L116">                    row.put(&quot;amount&quot;, rs.getBigDecimal(&quot;amount&quot;));</span>
-<span class="fc" id="L117">                    row.put(&quot;currency&quot;, rs.getString(&quot;currency&quot;).trim());</span>
-<span class="fc" id="L118">                    row.put(&quot;createdBy&quot;, rs.getString(&quot;created_by&quot;));</span>
-<span class="fc" id="L119">                    row.put(&quot;reason&quot;, &quot;LARGE_ROUND_AMOUNT_OR_AFTER_HOURS&quot;);</span>
-<span class="fc" id="L120">                    flagged.add(row);</span>
-<span class="fc" id="L121">                },</span>
+<span class="fc" id="L131">                    Map&lt;String, Object&gt; row = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L132">                    row.put(&quot;entryId&quot;, rs.getObject(&quot;entry_id&quot;).toString());</span>
+<span class="fc" id="L133">                    row.put(&quot;journalId&quot;, rs.getObject(&quot;journal_id&quot;).toString());</span>
+<span class="fc" id="L134">                    row.put(&quot;entryType&quot;, rs.getString(&quot;entry_type&quot;));</span>
+<span class="fc" id="L135">                    row.put(&quot;amount&quot;, rs.getBigDecimal(&quot;amount&quot;));</span>
+<span class="fc" id="L136">                    row.put(&quot;currency&quot;, rs.getString(&quot;currency&quot;).trim());</span>
+<span class="fc" id="L137">                    row.put(&quot;createdBy&quot;, rs.getString(&quot;created_by&quot;));</span>
+<span class="fc" id="L138">                    row.put(&quot;reason&quot;, &quot;LARGE_ROUND_AMOUNT_OR_AFTER_HOURS&quot;);</span>
+<span class="fc" id="L139">                    flagged.add(row);</span>
+<span class="fc" id="L140">                },</span>
                 threshold
         );
 
-<span class="fc" id="L125">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
-<span class="fc" id="L126">        report.put(&quot;report&quot;, &quot;Audit Anomaly Detection&quot;);</span>
-<span class="fc" id="L127">        report.put(&quot;thresholdAmount&quot;, threshold);</span>
-<span class="fc" id="L128">        report.put(&quot;anomaliesDetected&quot;, flagged.size());</span>
-<span class="fc" id="L129">        report.put(&quot;flaggedEntries&quot;, flagged);</span>
-<span class="fc" id="L130">        report.put(&quot;checkedAt&quot;, ZonedDateTime.now().toString());</span>
-<span class="fc" id="L131">        return report;</span>
+<span class="fc" id="L144">        Map&lt;String, Object&gt; report = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L145">        report.put(&quot;report&quot;, &quot;Audit Anomaly Detection&quot;);</span>
+<span class="fc" id="L146">        report.put(&quot;thresholdAmount&quot;, threshold);</span>
+<span class="fc" id="L147">        report.put(&quot;anomaliesDetected&quot;, flagged.size());</span>
+<span class="fc" id="L148">        report.put(&quot;flaggedEntries&quot;, flagged);</span>
+<span class="fc" id="L149">        report.put(&quot;checkedAt&quot;, ZonedDateTime.now().toString());</span>
+<span class="fc" id="L150">        return report;</span>
     }
 
     // 3. Second Concurrency Control Strategy: PostgreSQL Advisory Lock (Section A4.3 &amp; Day 7)
     @Transactional
     public UUID withdrawWithAdvisoryLock(UUID walletAccountId, BigDecimal amount, String actor) {
-<span class="fc" id="L137">        jdbcTemplate.query(&quot;SELECT pg_advisory_xact_lock(hashtext(?))&quot;, rs -&gt; {}, walletAccountId.toString());</span>
+<span class="fc" id="L156">        jdbcTemplate.query(&quot;SELECT pg_advisory_xact_lock(hashtext(?))&quot;, rs -&gt; {}, walletAccountId.toString());</span>
 
-<span class="fc" id="L139">        Account wallet = accountRepository.findById(walletAccountId)</span>
-<span class="pc" id="L140">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + walletAccountId));</span>
-<span class="fc" id="L141">        Account depositLiability = findByCode(&quot;2001&quot;);</span>
+<span class="fc" id="L158">        Account wallet = accountRepository.findById(walletAccountId)</span>
+<span class="pc" id="L159">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + walletAccountId));</span>
+<span class="fc" id="L160">        Account depositLiability = findByCode(&quot;2001&quot;);</span>
 
-<span class="fc" id="L143">        LedgerEntry debitLiability = new LedgerEntry();</span>
-<span class="fc" id="L144">        debitLiability.setAccount(depositLiability);</span>
-<span class="fc" id="L145">        debitLiability.setEntryType(&quot;DEBIT&quot;);</span>
-<span class="fc" id="L146">        debitLiability.setAmount(amount);</span>
-<span class="fc" id="L147">        debitLiability.setCurrency(&quot;INR&quot;);</span>
-<span class="fc" id="L148">        debitLiability.setCreatedBy(actor);</span>
+<span class="fc" id="L162">        LedgerEntry debitLiability = new LedgerEntry();</span>
+<span class="fc" id="L163">        debitLiability.setAccount(depositLiability);</span>
+<span class="fc" id="L164">        debitLiability.setEntryType(&quot;DEBIT&quot;);</span>
+<span class="fc" id="L165">        debitLiability.setAmount(amount);</span>
+<span class="fc" id="L166">        debitLiability.setCurrency(&quot;INR&quot;);</span>
+<span class="fc" id="L167">        debitLiability.setCreatedBy(actor);</span>
 
-<span class="fc" id="L150">        LedgerEntry creditWallet = new LedgerEntry();</span>
-<span class="fc" id="L151">        creditWallet.setAccount(wallet);</span>
-<span class="fc" id="L152">        creditWallet.setEntryType(&quot;CREDIT&quot;);</span>
-<span class="fc" id="L153">        creditWallet.setAmount(amount);</span>
-<span class="fc" id="L154">        creditWallet.setCurrency(&quot;INR&quot;);</span>
-<span class="fc" id="L155">        creditWallet.setCreatedBy(actor);</span>
+<span class="fc" id="L169">        LedgerEntry creditWallet = new LedgerEntry();</span>
+<span class="fc" id="L170">        creditWallet.setAccount(wallet);</span>
+<span class="fc" id="L171">        creditWallet.setEntryType(&quot;CREDIT&quot;);</span>
+<span class="fc" id="L172">        creditWallet.setAmount(amount);</span>
+<span class="fc" id="L173">        creditWallet.setCurrency(&quot;INR&quot;);</span>
+<span class="fc" id="L174">        creditWallet.setCreatedBy(actor);</span>
 
-<span class="fc" id="L157">        return ledgerService.postTransaction(Arrays.asList(debitLiability, creditWallet));</span>
+<span class="fc" id="L176">        return ledgerService.postTransaction(Arrays.asList(debitLiability, creditWallet));</span>
     }
 
     // 4. Circuit Breaker Pattern for External Dependencies (Section A10.4)
     public void recordDependencyFailure(String dependency) {
-<span class="pc" id="L162">        int count = failureCounts.computeIfAbsent(dependency, k -&gt; new AtomicInteger(0)).incrementAndGet();</span>
-<span class="fc bfc" id="L163" title="All 2 branches covered.">        if (count &gt;= FAILURE_THRESHOLD) {</span>
-<span class="fc" id="L164">            circuitState.put(dependency, &quot;OPEN&quot;);</span>
-<span class="fc" id="L165">            openedAt.put(dependency, Instant.now());</span>
+<span class="pc" id="L181">        int count = failureCounts.computeIfAbsent(dependency, k -&gt; new AtomicInteger(0)).incrementAndGet();</span>
+<span class="fc bfc" id="L182" title="All 2 branches covered.">        if (count &gt;= FAILURE_THRESHOLD) {</span>
+<span class="fc" id="L183">            circuitState.put(dependency, &quot;OPEN&quot;);</span>
+<span class="fc" id="L184">            openedAt.put(dependency, Instant.now());</span>
         }
-<span class="fc" id="L167">    }</span>
+<span class="fc" id="L186">    }</span>
 
     public void recordDependencySuccess(String dependency) {
-<span class="fc" id="L170">        failureCounts.computeIfAbsent(dependency, k -&gt; new AtomicInteger(0)).set(0);</span>
-<span class="fc" id="L171">        circuitState.put(dependency, &quot;CLOSED&quot;);</span>
-<span class="fc" id="L172">        openedAt.remove(dependency);</span>
-<span class="fc" id="L173">    }</span>
+<span class="fc" id="L189">        failureCounts.computeIfAbsent(dependency, k -&gt; new AtomicInteger(0)).set(0);</span>
+<span class="fc" id="L190">        circuitState.put(dependency, &quot;CLOSED&quot;);</span>
+<span class="fc" id="L191">        openedAt.remove(dependency);</span>
+<span class="fc" id="L192">    }</span>
 
     public String checkCircuitState(String dependency) {
-<span class="fc" id="L176">        String state = circuitState.getOrDefault(dependency, &quot;CLOSED&quot;);</span>
-<span class="fc bfc" id="L177" title="All 2 branches covered.">        if (&quot;OPEN&quot;.equals(state)) {</span>
-<span class="fc" id="L178">            Instant tripped = openedAt.get(dependency);</span>
-<span class="pc bpc" id="L179" title="1 of 4 branches missed.">            if (tripped != null &amp;&amp; Instant.now().isAfter(tripped.plusSeconds(COOLDOWN_SECONDS))) {</span>
-<span class="fc" id="L180">                circuitState.put(dependency, &quot;HALF_OPEN&quot;);</span>
-<span class="fc" id="L181">                return &quot;HALF_OPEN&quot;;</span>
+<span class="fc" id="L195">        String state = circuitState.getOrDefault(dependency, &quot;CLOSED&quot;);</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">        if (&quot;OPEN&quot;.equals(state)) {</span>
+<span class="fc" id="L197">            Instant tripped = openedAt.get(dependency);</span>
+<span class="pc bpc" id="L198" title="1 of 4 branches missed.">            if (tripped != null &amp;&amp; Instant.now().isAfter(tripped.plusSeconds(COOLDOWN_SECONDS))) {</span>
+<span class="fc" id="L199">                circuitState.put(dependency, &quot;HALF_OPEN&quot;);</span>
+<span class="fc" id="L200">                return &quot;HALF_OPEN&quot;;</span>
             }
         }
-<span class="fc" id="L184">        return state;</span>
+<span class="fc" id="L203">        return state;</span>
     }
 
     public void forceCooldownForTest(String dependency) {
-<span class="fc" id="L188">        openedAt.put(dependency, Instant.now().minusSeconds(COOLDOWN_SECONDS + 5));</span>
-<span class="fc" id="L189">    }</span>
+<span class="fc" id="L207">        openedAt.put(dependency, Instant.now().minusSeconds(COOLDOWN_SECONDS + 5));</span>
+<span class="fc" id="L208">    }</span>
 
     public Map&lt;String, Object&gt; getCircuitBreakerStatus() {
-<span class="nc" id="L192">        Map&lt;String, Object&gt; status = new LinkedHashMap&lt;&gt;();</span>
-<span class="nc bnc" id="L193" title="All 2 branches missed.">        for (String dep : Arrays.asList(&quot;FX_RATE_PROVIDER&quot;, &quot;PAYMENT_GATEWAY&quot;, &quot;BANK_TRANSFER_API&quot;)) {</span>
-<span class="nc" id="L194">            status.put(dep, checkCircuitState(dep));</span>
-<span class="nc" id="L195">        }</span>
-<span class="nc" id="L196">        return status;</span>
+<span class="fc" id="L211">        Map&lt;String, Object&gt; status = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">        for (String dep : Arrays.asList(&quot;FX_RATE_PROVIDER&quot;, &quot;PAYMENT_GATEWAY&quot;, &quot;BANK_TRANSFER_API&quot;)) {</span>
+<span class="fc" id="L213">            status.put(dep, checkCircuitState(dep));</span>
+<span class="fc" id="L214">        }</span>
+<span class="fc" id="L215">        return status;</span>
     }
 
     private Account findByCode(String code) {
-<span class="fc" id="L200">        return accountRepository.findAll().stream()</span>
-<span class="fc" id="L201">                .filter(a -&gt; code.equals(a.getAccountCode()))</span>
-<span class="fc" id="L202">                .findFirst()</span>
-<span class="pc" id="L203">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + code));</span>
+<span class="fc" id="L219">        return accountRepository.findAll().stream()</span>
+<span class="fc" id="L220">                .filter(a -&gt; code.equals(a.getAccountCode()))</span>
+<span class="fc" id="L221">                .findFirst()</span>
+<span class="pc" id="L222">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account code not found: &quot; + code));</span>
     }
 
     private LedgerEntry buildEntry(String code, String type, BigDecimal amount, String currency, String actor) {
-<span class="fc" id="L207">        LedgerEntry e = new LedgerEntry();</span>
-<span class="fc" id="L208">        e.setAccount(findByCode(code));</span>
-<span class="fc" id="L209">        e.setEntryType(type);</span>
-<span class="fc" id="L210">        e.setAmount(amount);</span>
-<span class="fc" id="L211">        e.setCurrency(currency);</span>
-<span class="fc" id="L212">        e.setCreatedBy(actor);</span>
-<span class="fc" id="L213">        return e;</span>
+<span class="fc" id="L226">        LedgerEntry e = new LedgerEntry();</span>
+<span class="fc" id="L227">        e.setAccount(findByCode(code));</span>
+<span class="fc" id="L228">        e.setEntryType(type);</span>
+<span class="fc" id="L229">        e.setAmount(amount);</span>
+<span class="fc" id="L230">        e.setCurrency(currency);</span>
+<span class="fc" id="L231">        e.setCreatedBy(actor);</span>
+<span class="fc" id="L232">        return e;</span>
     }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

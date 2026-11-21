@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 
 @RestController
-@RequestMapping(&quot;/api/ledger&quot;)
+@RequestMapping({&quot;/api/ledger&quot;, &quot;/api/v1&quot;})
 public class ResilienceController {
 
     private final ResilienceAndAuditService resilienceService;
@@ -18,19 +18,19 @@ public class ResilienceController {
 
     @PostMapping(&quot;/fx/revalue&quot;)
     public ResponseEntity&lt;Object&gt; runUnrealisedFxRevaluation(
-            @RequestParam(defaultValue = &quot;83.00000000&quot;) BigDecimal baselineUsdRate) {
-<span class="nc" id="L22">        return ResponseEntity.ok(resilienceService.runUnrealisedFxRevaluation(baselineUsdRate));</span>
+            @RequestParam(required = false) BigDecimal baselineUsdRate) {
+<span class="fc" id="L22">        return ResponseEntity.ok(resilienceService.runUnrealisedFxRevaluation(baselineUsdRate));</span>
     }
 
     @GetMapping(&quot;/audit/anomalies&quot;)
     public ResponseEntity&lt;Object&gt; detectAnomalies(
             @RequestParam(defaultValue = &quot;10000.00&quot;) BigDecimal threshold) {
-<span class="nc" id="L28">        return ResponseEntity.ok(resilienceService.detectAnomalies(threshold));</span>
+<span class="fc" id="L28">        return ResponseEntity.ok(resilienceService.detectAnomalies(threshold));</span>
     }
 
     @GetMapping(&quot;/circuit-breaker/status&quot;)
     public ResponseEntity&lt;Object&gt; getCircuitBreakerStatus() {
-<span class="nc" id="L33">        return ResponseEntity.ok(resilienceService.getCircuitBreakerStatus());</span>
+<span class="fc" id="L33">        return ResponseEntity.ok(resilienceService.getCircuitBreakerStatus());</span>
     }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

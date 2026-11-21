@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 
 @RestController
-@RequestMapping("/api/ledger")
+@RequestMapping({"/api/ledger", "/api/v1"})
 public class ResilienceController {
 
     private final ResilienceAndAuditService resilienceService;
@@ -18,7 +18,7 @@ public class ResilienceController {
 
     @PostMapping("/fx/revalue")
     public ResponseEntity<Object> runUnrealisedFxRevaluation(
-            @RequestParam(defaultValue = "83.00000000") BigDecimal baselineUsdRate) {
+            @RequestParam(required = false) BigDecimal baselineUsdRate) {
         return ResponseEntity.ok(resilienceService.runUnrealisedFxRevaluation(baselineUsdRate));
     }
 

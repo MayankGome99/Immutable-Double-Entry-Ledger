@@ -1,6 +1,3 @@
-
-
-
 package com.zetheta.demo;
 
 import com.zetheta.demo.models.Account;
@@ -62,6 +59,12 @@ class ResilienceAndLoadTests {
 
         assertEquals("UNREALISED_GAIN", result.get("pnlType"));
         assertNotEquals("NO_MOVEMENT", result.get("journalId"));
+
+        // Running a second time at the exact same rate must read fx_revaluation_state and post nothing
+        Map<String, Object> secondRun = resilienceService.runUnrealisedFxRevaluation(null);
+        assertEquals("NONE", secondRun.get("pnlType"));
+        assertEquals("NO_MOVEMENT", secondRun.get("journalId"));
+
         assertTrialBalanceZero();
     }
 
@@ -136,7 +139,6 @@ class ResilienceAndLoadTests {
         assertTrue(latch.await(30, TimeUnit.SECONDS));
         executor.shutdown();
 
-        // Day 7 Acceptance Criteria: 50 x INR 500 on INR 10,000 => exactly 20 succeed, 30 fail, balance = 0
         assertEquals(20, succeeded.get(), "Exactly 20 withdrawals should succeed");
         assertEquals(30, failed.get(), "Exactly 30 withdrawals should fail with insufficient balance");
         assertEquals(0, BigDecimal.ZERO.compareTo(entryRepository.calculateBalance(testWalletId)));

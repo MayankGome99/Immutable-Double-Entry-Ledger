@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GlobalExceptionHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.exception</a> &gt; <span class="el_source">GlobalExceptionHandler.java</span></div><h1>GlobalExceptionHandler.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.exception;
 
+import com.zetheta.demo.config.RequestIdFilter;
 import io.swagger.v3.oas.annotations.Hidden;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -13,34 +15,38 @@ import java.util.UUID;
 
 @Hidden
 @RestControllerAdvice(basePackages = &quot;com.zetheta.demo.controllers&quot;)
-<span class="fc" id="L16">public class GlobalExceptionHandler {</span>
+<span class="fc" id="L18">public class GlobalExceptionHandler {</span>
 
     @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity&lt;Object&gt; handleBusinessRuleError(IllegalArgumentException ex) {
-<span class="nc" id="L20">        return buildErrorResponse(&quot;BUSINESS_RULE_VIOLATION&quot;, &quot;TXN_422&quot;, ex.getMessage(), HttpStatus.valueOf(422));</span>
+    public ResponseEntity&lt;Object&gt; handleBusinessRuleError(IllegalArgumentException ex, HttpServletRequest request) {
+<span class="fc" id="L22">        return buildErrorResponse(&quot;BUSINESS_RULE_VIOLATION&quot;, &quot;TXN_422&quot;, ex.getMessage(), HttpStatus.valueOf(422), request);</span>
     }
 
     @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity&lt;Object&gt; handleConflictError(IllegalStateException ex) {
-<span class="nc" id="L25">        return buildErrorResponse(&quot;CONFLICT&quot;, &quot;TXN_409&quot;, ex.getMessage(), HttpStatus.CONFLICT);</span>
+    public ResponseEntity&lt;Object&gt; handleConflictError(IllegalStateException ex, HttpServletRequest request) {
+<span class="fc" id="L27">        return buildErrorResponse(&quot;CONFLICT&quot;, &quot;TXN_409&quot;, ex.getMessage(), HttpStatus.CONFLICT, request);</span>
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity&lt;Object&gt; handleGenericError(Exception ex) {
-<span class="nc" id="L30">        return buildErrorResponse(&quot;INTERNAL_ERROR&quot;, &quot;SYS_500&quot;, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);</span>
+    public ResponseEntity&lt;Object&gt; handleGenericError(Exception ex, HttpServletRequest request) {
+<span class="nc" id="L32">        return buildErrorResponse(&quot;INTERNAL_ERROR&quot;, &quot;SYS_500&quot;, ex.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR, request);</span>
     }
 
-    private ResponseEntity&lt;Object&gt; buildErrorResponse(String type, String code, String message, HttpStatus status) {
-<span class="nc" id="L34">        Map&lt;String, Object&gt; errorDetails = new LinkedHashMap&lt;&gt;();</span>
-<span class="nc" id="L35">        errorDetails.put(&quot;type&quot;, type);</span>
-<span class="nc" id="L36">        errorDetails.put(&quot;code&quot;, code);</span>
-<span class="nc" id="L37">        errorDetails.put(&quot;message&quot;, message);</span>
-<span class="nc" id="L38">        errorDetails.put(&quot;request_id&quot;, &quot;req_&quot; + UUID.randomUUID());</span>
-<span class="nc" id="L39">        errorDetails.put(&quot;timestamp&quot;, Instant.now().toString());</span>
+    private ResponseEntity&lt;Object&gt; buildErrorResponse(String type, String code, String message,
+                                                      HttpStatus status, HttpServletRequest request) {
+<span class="pc bpc" id="L37" title="1 of 2 branches missed.">        Object attr = request != null ? request.getAttribute(RequestIdFilter.REQUEST_ID_ATTR) : null;</span>
+<span class="pc bpc" id="L38" title="1 of 2 branches missed.">        String requestId = (attr != null) ? attr.toString() : &quot;req_&quot; + UUID.randomUUID();</span>
 
-<span class="nc" id="L41">        Map&lt;String, Object&gt; body = new LinkedHashMap&lt;&gt;();</span>
-<span class="nc" id="L42">        body.put(&quot;error&quot;, errorDetails);</span>
-<span class="nc" id="L43">        return ResponseEntity.status(status).body(body);</span>
+<span class="fc" id="L40">        Map&lt;String, Object&gt; errorDetails = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L41">        errorDetails.put(&quot;type&quot;, type);</span>
+<span class="fc" id="L42">        errorDetails.put(&quot;code&quot;, code);</span>
+<span class="fc" id="L43">        errorDetails.put(&quot;message&quot;, message);</span>
+<span class="fc" id="L44">        errorDetails.put(&quot;request_id&quot;, requestId);</span>
+<span class="fc" id="L45">        errorDetails.put(&quot;timestamp&quot;, Instant.now().toString());</span>
+
+<span class="fc" id="L47">        Map&lt;String, Object&gt; body = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L48">        body.put(&quot;error&quot;, errorDetails);</span>
+<span class="fc" id="L49">        return ResponseEntity.status(status).body(body);</span>
     }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

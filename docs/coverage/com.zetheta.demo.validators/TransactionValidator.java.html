@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report"></a> &gt; <a href="index.source.html" class="el_package">com.zetheta.demo.validators</a> &gt; <span class="el_source">TransactionValidator.java</span></div><h1>TransactionValidator.java</h1><pre class="source lang-java linenums">package com.zetheta.demo.validators;
+
+
+import com.zetheta.demo.models.TransactionType;
+import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.util.EnumMap;
+import java.util.Map;
+
+@Component
+public class TransactionValidator {
+
+<span class="fc" id="L14">    public record TypeRule(BigDecimal minAmount, BigDecimal maxAmount, int maxScale) {</span>
+    }
+
+<span class="fc" id="L17">    private final Map&lt;TransactionType, TypeRule&gt; rules = new EnumMap&lt;&gt;(TransactionType.class);</span>
+
+<span class="fc" id="L19">    public TransactionValidator() {</span>
+<span class="fc" id="L20">        rules.put(TransactionType.DEPOSIT_BANK, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;10000000.00&quot;), 4));</span>
+<span class="fc" id="L21">        rules.put(TransactionType.DEPOSIT_CARD, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;500000.00&quot;), 4));</span>
+<span class="fc" id="L22">        rules.put(TransactionType.WITHDRAWAL_BANK, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;5000000.00&quot;), 4));</span>
+<span class="fc" id="L23">        rules.put(TransactionType.P2P_TRANSFER, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;200000.00&quot;), 4));</span>
+<span class="fc" id="L24">        rules.put(TransactionType.MERCHANT_PAYMENT_QR, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;100000.00&quot;), 4));</span>
+<span class="fc" id="L25">        rules.put(TransactionType.MERCHANT_PAYMENT_ONLINE, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;500000.00&quot;), 4));</span>
+<span class="fc" id="L26">        rules.put(TransactionType.BILL_PAYMENT, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;500000.00&quot;), 4));</span>
+<span class="fc" id="L27">        rules.put(TransactionType.INTEREST_ACCRUAL, new TypeRule(new BigDecimal(&quot;0.01&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L28">        rules.put(TransactionType.INTEREST_PAYOUT, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L29">        rules.put(TransactionType.FEE_DEDUCTION, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;50000.00&quot;), 4));</span>
+<span class="fc" id="L30">        rules.put(TransactionType.CASHBACK_CREDIT, new TypeRule(new BigDecimal(&quot;0.01&quot;), new BigDecimal(&quot;50000.00&quot;), 4));</span>
+<span class="fc" id="L31">        rules.put(TransactionType.PROMOTIONAL_CREDIT, new TypeRule(new BigDecimal(&quot;0.01&quot;), new BigDecimal(&quot;50000.00&quot;), 4));</span>
+<span class="fc" id="L32">        rules.put(TransactionType.LOAN_DISBURSEMENT, new TypeRule(new BigDecimal(&quot;10.00&quot;), new BigDecimal(&quot;5000000.00&quot;), 4));</span>
+<span class="fc" id="L33">        rules.put(TransactionType.LOAN_EMI_PAYMENT, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L34">        rules.put(TransactionType.FX_CONVERSION, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;250000.00&quot;), 4));</span>
+<span class="fc" id="L35">        rules.put(TransactionType.REFUND_FULL, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L36">        rules.put(TransactionType.REFUND_PARTIAL, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L37">        rules.put(TransactionType.CHARGEBACK, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;1000000.00&quot;), 4));</span>
+<span class="fc" id="L38">        rules.put(TransactionType.REWARD_POINTS_REDEMPTION, new TypeRule(new BigDecimal(&quot;1.00&quot;), new BigDecimal(&quot;100000.00&quot;), 4));</span>
+<span class="fc" id="L39">        rules.put(TransactionType.ACCOUNT_CLOSURE_SWEEP, new TypeRule(new BigDecimal(&quot;0.01&quot;), new BigDecimal(&quot;10000000.00&quot;), 4));</span>
+<span class="fc" id="L40">    }</span>
+
+    public void validate(TransactionType type, BigDecimal amount, String createdBy) {
+<span class="pc bpc" id="L43" title="1 of 2 branches missed.">        if (type == null) {</span>
+<span class="nc" id="L44">            throw new IllegalArgumentException(&quot;TransactionType is required.&quot;);</span>
+        }
+<span class="pc bpc" id="L46" title="1 of 4 branches missed.">        if (amount == null || amount.compareTo(BigDecimal.ZERO) &lt;= 0) {</span>
+<span class="fc" id="L47">            throw new IllegalArgumentException(&quot;Amount must be strictly greater than zero.&quot;);</span>
+        }
+<span class="pc bpc" id="L49" title="1 of 4 branches missed.">        if (createdBy == null || createdBy.isBlank()) {</span>
+<span class="fc" id="L50">            throw new IllegalArgumentException(&quot;createdBy actor metadata is required for audit compliance.&quot;);</span>
+        }
+<span class="fc" id="L52">        TypeRule rule = rules.get(type);</span>
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">        if (rule == null) {</span>
+<span class="nc" id="L54">            throw new IllegalArgumentException(&quot;No validation rule registered for transaction type: &quot; + type);</span>
+        }
+<span class="pc bpc" id="L56" title="1 of 2 branches missed.">        if (amount.stripTrailingZeros().scale() &gt; rule.maxScale()) {</span>
+<span class="nc" id="L57">            throw new IllegalArgumentException(&quot;Amount exceeds maximum decimal precision of &quot; + rule.maxScale() + &quot; places.&quot;);</span>
+        }
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">        if (amount.compareTo(rule.minAmount()) &lt; 0) {</span>
+<span class="nc" id="L60">            throw new IllegalArgumentException(type + &quot; amount &quot; + amount + &quot; is below minimum allowed &quot; + rule.minAmount());</span>
+        }
+<span class="fc bfc" id="L62" title="All 2 branches covered.">        if (amount.compareTo(rule.maxAmount()) &gt; 0) {</span>
+<span class="fc" id="L63">            throw new IllegalArgumentException(type + &quot; amount &quot; + amount + &quot; exceeds maximum allowed &quot; + rule.maxAmount());</span>
+        }
+<span class="fc" id="L65">    }</span>
+
+    public BigDecimal getMinAmount(TransactionType type) {
+<span class="fc" id="L68">        return rules.get(type).minAmount();</span>
+    }
+
+    public BigDecimal getMaxAmount(TransactionType type) {
+<span class="nc" id="L72">        return rules.get(type).maxAmount();</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.12.202403310830</span></div></body></html>

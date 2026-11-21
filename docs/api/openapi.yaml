@@ -1,0 +1,594 @@
+openapi: 3.0.3
+info:
+  title: Immutable Double-Entry Financial Ledger API
+  version: 1.0.0
+  description: >
+    Double-entry financial ledger backend built on Spring Boot 4, Java 21, and PostgreSQL 15.
+    Enforces per-currency debit = credit invariants, database-level immutability triggers,
+    global SHA-256 hash chaining, multi-currency FX rate snapshots, and concurrency controls.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker / Spring Boot instance
+
+tags:
+  - name: System & Audit
+  - name: Accounts & Statements
+  - name: Transactions & Transfers
+  - name: Reversals & Refunds
+  - name: Multi-Currency FX
+  - name: Financial Reports
+
+paths:
+  /api/ledger/health:
+    get:
+      tags: [System & Audit]
+      summary: System health and live hash-chain audit check
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: UP }
+                  database: { type: string, example: CONNECTED }
+                  accountsCount: { type: integer }
+                  ledgerEntriesCount: { type: integer }
+                  auditStatus: { type: string }
+                  timestamp: { type: string, format: date-time }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/accounts:
+    get:
+      tags: [Accounts & Statements]
+      summary: List all Chart of Accounts entries
+      responses:
+        "200":
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Account"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/entries:
+    get:
+      tags: [Accounts & Statements]
+      summary: List all posted ledger entries
+      responses:
+        "200":
+          description: List of ledger entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LedgerEntry"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/accounts/{accountId}/statement:
+    get:
+      tags: [Accounts & Statements]
+      summary: Get account statement entries (JSON)
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Account ledger entries ordered by effective date descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LedgerEntry"
+        "404":
+          description: No entries found for account
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/accounts/{accountId}/statement/csv:
+    get:
+      tags: [Accounts & Statements]
+      summary: Export account statement as CSV
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: CSV file download
+          content:
+            text/csv:
+              schema: { type: string }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/transactions:
+    post:
+      tags: [Transactions & Transfers]
+      summary: Post a balanced multi-line journal entry
+      parameters:
+        - name: X-Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+          description: Client-generated idempotency key to prevent duplicate processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 2
+              items:
+                $ref: "#/components/schemas/LedgerEntry"
+      responses:
+        "200":
+          description: Journal entry posted and hash-chained
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JournalResponse"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/transactions/typed:
+    post:
+      tags: [Transactions & Transfers]
+      summary: Execute one of the 20 supported neo-banking transaction types
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/TransactionType"
+        - name: amount
+          in: query
+          required: true
+          schema: { type: number, format: decimal, exclusiveMinimum: 0 }
+        - name: createdBy
+          in: query
+          required: false
+          schema: { type: string, default: API_USER }
+      responses:
+        "200":
+          description: Typed transaction posted
+          content:
+            application/json:
+              schema: { type: object }
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/transfer:
+    post:
+      tags: [Transactions & Transfers]
+      summary: Atomic same-currency P2P transfer with ordered pessimistic locks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferRequest"
+      responses:
+        "200":
+          description: Transfer completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JournalResponse"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/stress-test:
+    post:
+      tags: [Transactions & Transfers]
+      summary: Post 1,000 sequential balanced deposit transactions and verify hash chain
+      responses:
+        "200":
+          description: Stress test summary string
+          content:
+            text/plain:
+              schema: { type: string }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/reversals/{journalId}:
+    post:
+      tags: [Reversals & Refunds]
+      summary: Create a full no-mutation mirror reversal of an existing journal
+      parameters:
+        - name: journalId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Reversal journal posted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  originalJournalId: { type: string, format: uuid }
+                  reversalJournalId: { type: string, format: uuid }
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/refunds/partial:
+    post:
+      tags: [Reversals & Refunds]
+      summary: Process a partial refund with configurable fee refund policy
+      parameters:
+        - name: originalJournalId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: originalAmount
+          in: query
+          required: true
+          schema: { type: number, format: decimal }
+        - name: originalFee
+          in: query
+          required: false
+          schema: { type: number, format: decimal, default: 20.00 }
+        - name: refundAmount
+          in: query
+          required: true
+          schema: { type: number, format: decimal }
+        - name: feePolicy
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/FeeRefundPolicy"
+        - name: X-Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string }
+        - name: createdBy
+          in: query
+          required: false
+          schema: { type: string, default: API_USER }
+      responses:
+        "200":
+          description: Partial refund posted
+          content:
+            application/json:
+              schema: { type: object }
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/fx/rates:
+    post:
+      tags: [Multi-Currency FX]
+      summary: Store an immutable FX rate snapshot with validity window
+      parameters:
+        - name: baseCurrency
+          in: query
+          required: true
+          schema: { type: string, example: USD }
+        - name: quoteCurrency
+          in: query
+          required: true
+          schema: { type: string, example: INR }
+        - name: rate
+          in: query
+          required: true
+          schema: { type: number, format: decimal, example: 83.42 }
+        - name: source
+          in: query
+          required: false
+          schema: { type: string, default: RBI_REFERENCE }
+        - name: validMinutes
+          in: query
+          required: false
+          schema: { type: integer, default: 60 }
+      responses:
+        "200":
+          description: Saved exchange rate snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExchangeRateSnapshot"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/fx/convert/usd-to-inr:
+    post:
+      tags: [Multi-Currency FX]
+      summary: Convert USD to INR using latest valid snapshot with 0.5% FX markup
+      parameters:
+        - name: usdAmount
+          in: query
+          required: true
+          schema: { type: number, format: decimal }
+        - name: createdBy
+          in: query
+          required: false
+          schema: { type: string, default: FX_USER }
+      responses:
+        "200":
+          description: Conversion completed with USD and INR journal IDs
+          content:
+            application/json:
+              schema: { type: object }
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/fx/revalue:
+    post:
+      tags: [Multi-Currency FX]
+      summary: Run unrealised FX P&L revaluation for USD holdings
+      parameters:
+        - name: baselineUsdRate
+          in: query
+          required: false
+          schema: { type: number, format: decimal, default: 83.00000000 }
+      responses:
+        "200":
+          description: Revaluation result and journal ID
+          content:
+            application/json:
+              schema: { type: object }
+        "422":
+          $ref: "#/components/responses/UnprocessableError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/trial-balance:
+    get:
+      tags: [Financial Reports]
+      summary: Generate real-time Trial Balance across all posted entries
+      responses:
+        "200":
+          description: Aggregated account debits, credits, and net balances
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: array, items: {} }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/reports/income-statement:
+    get:
+      tags: [Financial Reports]
+      summary: Generate Income Statement (Revenue minus Expenses)
+      responses:
+        "200":
+          description: Income statement summary
+          content:
+            application/json:
+              schema: { type: object }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/reports/balance-sheet:
+    get:
+      tags: [Financial Reports]
+      summary: Generate Balance Sheet verifying Assets = Liabilities + Equity
+      responses:
+        "200":
+          description: Balance sheet summary
+          content:
+            application/json:
+              schema: { type: object }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/reports/currency-exposure:
+    get:
+      tags: [Financial Reports]
+      summary: Generate multi-currency net exposure report (Assets minus Liabilities) in INR
+      responses:
+        "200":
+          description: Currency exposure breakdown
+          content:
+            application/json:
+              schema: { type: object }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/audit:
+    get:
+      tags: [System & Audit]
+      summary: Traverse global SHA-256 hash chain and verify zero tampering
+      responses:
+        "200":
+          description: Audit verification message
+          content:
+            text/plain:
+              schema: { type: string }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/audit/anomalies:
+    get:
+      tags: [System & Audit]
+      summary: Flag large round-amount or after-hours UTC ledger entries
+      parameters:
+        - name: threshold
+          in: query
+          required: false
+          schema: { type: number, format: decimal, default: 10000.00 }
+      responses:
+        "200":
+          description: Anomaly report
+          content:
+            application/json:
+              schema: { type: object }
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/ledger/circuit-breaker/status:
+    get:
+      tags: [System & Audit]
+      summary: Inspect external dependency circuit breaker states
+      responses:
+        "200":
+          description: Map of dependency name to state (CLOSED, OPEN, HALF_OPEN)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                  enum: [CLOSED, OPEN, HALF_OPEN]
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  schemas:
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        accountCode: { type: string, example: "1001" }
+        accountName: { type: string, example: "Customer Wallet - Primary (INR)" }
+        accountType: { type: string, enum: [Asset, Liability, Equity, Revenue, Expense] }
+        subType: { type: string }
+        currency: { type: string, example: INR }
+
+    LedgerEntry:
+      type: object
+      required: [account, entryType, amount]
+      properties:
+        entryId: { type: string, format: uuid }
+        journalId: { type: string, format: uuid }
+        account:
+          type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+        entryType: { type: string, enum: [DEBIT, CREDIT] }
+        amount: { type: number, format: decimal, exclusiveMinimum: 0 }
+        currency: { type: string, example: INR }
+        effectiveDate: { type: string, format: date-time }
+        createdBy: { type: string, example: SYSTEM }
+        idempotencyKey: { type: string }
+        status: { type: string, example: POSTED }
+        previousHash: { type: string }
+        hash: { type: string }
+
+    TransferRequest:
+      type: object
+      required: [fromAccountId, toAccountId, amount]
+      properties:
+        fromAccountId: { type: string, format: uuid }
+        toAccountId: { type: string, format: uuid }
+        amount: { type: number, format: decimal, exclusiveMinimum: 0 }
+
+    JournalResponse:
+      type: object
+      properties:
+        message: { type: string }
+        journalId: { type: string, format: uuid }
+
+    ExchangeRateSnapshot:
+      type: object
+      properties:
+        snapshotId: { type: string, format: uuid }
+        baseCurrency: { type: string }
+        quoteCurrency: { type: string }
+        rate: { type: number, format: decimal }
+        inverseRate: { type: number, format: decimal }
+        source: { type: string }
+        capturedAt: { type: string, format: date-time }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+
+    FeeRefundPolicy:
+      type: string
+      enum: [PROPORTIONAL, FULL, NONE]
+      default: PROPORTIONAL
+
+    TransactionType:
+      type: string
+      enum:
+        - CUSTOMER_DEPOSIT_BANK
+        - CUSTOMER_DEPOSIT_CARD
+        - CUSTOMER_WITHDRAWAL_BANK
+        - P2P_TRANSFER
+        - MERCHANT_PAYMENT_QR
+        - MERCHANT_PAYMENT_ONLINE
+        - BILL_PAYMENT
+        - INTEREST_ACCRUAL_DAILY
+        - INTEREST_PAYOUT_MONTHLY
+        - FEE_DEDUCTION_MONTHLY
+        - CASHBACK_CREDIT
+        - PROMOTIONAL_CREDIT
+        - LOAN_DISBURSEMENT
+        - LOAN_EMI_PAYMENT
+        - FX_CONVERSION
+        - REFUND_FULL
+        - REFUND_PARTIAL
+        - CHARGEBACK
+        - REWARD_POINTS_REDEMPTION
+        - ACCOUNT_CLOSURE_SWEEP
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            type: { type: string }
+            code: { type: string }
+            message: { type: string }
+            timestamp: { type: string, format: date-time }
+
+  responses:
+    ConflictError:
+      description: Conflict (duplicate idempotency key or journal already reversed)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableError:
+      description: Business rule or validation failure (unbalanced journal, insufficient balance, stale FX rate)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: Unexpected server or database error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
