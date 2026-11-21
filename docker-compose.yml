@@ -13,18 +13,27 @@ services:
       test: ["CMD-SHELL", "pg_isready -U root -d ledger_db"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
-  app:
-    build: .
-    container_name: ledger_app
+  tests:
+    image: maven:3.9.9-eclipse-temurin-21
+    profiles: ["test"]
+    working_dir: /app
     depends_on:
       db:
         condition: service_healthy
     environment:
-      TZ: UTC
-      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/ledger_db?options=-c%20TimeZone=UTC
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/ledger_db?TimeZone=UTC
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: rootpassword
-    ports:
-      - "8080:8080"
+      TZ: UTC
+    volumes:
+      - .:/app
+      - maven_cache:/root/.m2
+    command: ["mvn", "clean", "verify"]
+
+volumes:
+  postgres_data:
+  maven_cache:
