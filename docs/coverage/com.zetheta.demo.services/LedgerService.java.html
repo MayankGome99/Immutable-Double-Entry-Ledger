@@ -208,8 +208,8 @@ public class LedgerService {
     private String getChainHead() {
 <span class="fc" id="L209">        List&lt;String&gt; heads = jdbcTemplate.queryForList(</span>
                 &quot;SELECT hash FROM ledger_entries ORDER BY chain_seq DESC LIMIT 1&quot;, String.class);
-<span class="pc bpc" id="L211" title="3 of 6 branches missed.">        if (heads.isEmpty() || heads.getFirst() == null || heads.getFirst().isBlank()) {</span>
-<span class="nc" id="L212">            return HashUtils.GENESIS_HASH;</span>
+<span class="pc bpc" id="L211" title="2 of 6 branches missed.">        if (heads.isEmpty() || heads.getFirst() == null || heads.getFirst().isBlank()) {</span>
+<span class="fc" id="L212">            return HashUtils.GENESIS_HASH;</span>
         }
 <span class="fc" id="L214">        return heads.getFirst().trim();</span>
     }
@@ -330,8 +330,8 @@ public class LedgerService {
 <span class="nc" id="L330">            throw new IllegalArgumentException(&quot;Transfer failed: Sender and receiver accounts must be different.&quot;);</span>
         }
 
-<span class="pc bpc" id="L333" title="1 of 2 branches missed.">        UUID firstLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? fromAccountId : toAccountId;</span>
-<span class="pc bpc" id="L334" title="1 of 2 branches missed.">        UUID secondLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? toAccountId : fromAccountId;</span>
+<span class="fc bfc" id="L333" title="All 2 branches covered.">        UUID firstLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? fromAccountId : toAccountId;</span>
+<span class="fc bfc" id="L334" title="All 2 branches covered.">        UUID secondLock = fromAccountId.compareTo(toAccountId) &lt; 0 ? toAccountId : fromAccountId;</span>
 
 <span class="fc" id="L336">        accountRepository.findByIdWithLock(firstLock)</span>
 <span class="pc" id="L337">                .orElseThrow(() -&gt; new IllegalArgumentException(&quot;Account not found: &quot; + firstLock));</span>
@@ -363,7 +363,7 @@ public class LedgerService {
     }
 
     public Map&lt;String, Object&gt; getTrialBalance(ZonedDateTime asOfDate, String currencyFilter) {
-<span class="pc bpc" id="L366" title="1 of 2 branches missed.">        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;</span>
+<span class="fc bfc" id="L366" title="All 2 branches covered.">        ZonedDateTime cutoff = (asOfDate == null) ? ZonedDateTime.now().plusYears(1) : asOfDate;</span>
 <span class="pc bpc" id="L367" title="2 of 4 branches missed.">        String filter = (currencyFilter == null || currencyFilter.isBlank())</span>
 <span class="pc" id="L368">                ? null : currencyFilter.trim().toUpperCase();</span>
 
@@ -541,8 +541,8 @@ public class LedgerService {
 <span class="fc" id="L541">            BigDecimal credits = (BigDecimal) row[2];</span>
 <span class="fc bfc" id="L542" title="All 2 branches covered.">            if (&quot;Revenue&quot;.equalsIgnoreCase(type)) {</span>
 <span class="fc" id="L543">                totalRevenue = credits.subtract(debits);</span>
-<span class="fc bfc" id="L544" title="All 2 branches covered.">            } else if (&quot;Expense&quot;.equalsIgnoreCase(type)) {</span>
-<span class="fc" id="L545">                totalExpenses = debits.subtract(credits);</span>
+<span class="pc bpc" id="L544" title="1 of 2 branches missed.">            } else if (&quot;Expense&quot;.equalsIgnoreCase(type)) {</span>
+<span class="nc" id="L545">                totalExpenses = debits.subtract(credits);</span>
             }
 <span class="fc" id="L547">        }</span>
 
@@ -576,12 +576,12 @@ public class LedgerService {
 <span class="fc" id="L576">            String type = (String) row[0];</span>
 <span class="fc" id="L577">            BigDecimal debits = (BigDecimal) row[1];</span>
 <span class="fc" id="L578">            BigDecimal credits = (BigDecimal) row[2];</span>
-<span class="pc bpc" id="L579" title="2 of 6 branches missed.">            switch (type) {</span>
+<span class="pc bpc" id="L579" title="3 of 6 branches missed.">            switch (type) {</span>
 <span class="fc" id="L580">                case &quot;Asset&quot; -&gt; assets = debits.subtract(credits);</span>
 <span class="fc" id="L581">                case &quot;Liability&quot; -&gt; liabilities = credits.subtract(debits);</span>
 <span class="nc" id="L582">                case &quot;Equity&quot; -&gt; equity = credits.subtract(debits);</span>
 <span class="fc" id="L583">                case &quot;Revenue&quot; -&gt; revenue = credits.subtract(debits);</span>
-<span class="fc" id="L584">                case &quot;Expense&quot; -&gt; expenses = debits.subtract(credits);</span>
+<span class="nc" id="L584">                case &quot;Expense&quot; -&gt; expenses = debits.subtract(credits);</span>
             }
 <span class="fc" id="L586">        }</span>
 

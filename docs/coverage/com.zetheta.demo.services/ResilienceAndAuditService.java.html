@@ -64,15 +64,15 @@ public class ResilienceAndAuditService {
 <span class="fc" id="L64">            List&lt;BigDecimal&gt; savedRates = jdbcTemplate.queryForList(</span>
                     &quot;SELECT last_revalued_rate FROM fx_revaluation_state WHERE currency_pair = 'USD/INR'&quot;,
                     BigDecimal.class);
-<span class="pc bpc" id="L67" title="1 of 2 branches missed.">            if (!savedRates.isEmpty()) {</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">            if (!savedRates.isEmpty()) {</span>
 <span class="fc" id="L68">                base = savedRates.getFirst();</span>
             } else {
                 // First run with no prior state: use previous snapshot if available, otherwise initialize at closing rate (delta = 0)
-<span class="nc" id="L71">                List&lt;BigDecimal&gt; priorSnapshots = jdbcTemplate.queryForList(</span>
+<span class="fc" id="L71">                List&lt;BigDecimal&gt; priorSnapshots = jdbcTemplate.queryForList(</span>
                         &quot;SELECT rate FROM exchange_rate_snapshots WHERE base_currency = 'USD' AND quote_currency = 'INR' &quot; +
                                 &quot;ORDER BY captured_at DESC OFFSET 1 LIMIT 1&quot;,
                         BigDecimal.class);
-<span class="nc bnc" id="L75" title="All 2 branches missed.">                base = priorSnapshots.isEmpty() ? closing.getRate() : priorSnapshots.getFirst();</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">                base = priorSnapshots.isEmpty() ? closing.getRate() : priorSnapshots.getFirst();</span>
             }
         }
 

@@ -4,6 +4,7 @@ import com.zetheta.demo.config.RequestIdFilter;
 import com.zetheta.demo.models.Account;
 import com.zetheta.demo.models.LedgerEntry;
 import com.zetheta.demo.repositories.AccountRepository;
+import com.zetheta.demo.repositories.LedgerEntryRepository;
 import com.zetheta.demo.services.ExchangeRateService;
 import com.zetheta.demo.services.LedgerService;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,12 +19,15 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -32,6 +36,7 @@ import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -56,6 +61,9 @@ class ControllerAndConcurrencyTests {
 
     @Autowired
     private AccountRepository accountRepository;
+
+    @Autowired
+    private LedgerEntryRepository ledgerEntryRepository;
 
     @Autowired
     private LedgerService ledgerService;
@@ -318,6 +326,53 @@ class ControllerAndConcurrencyTests {
                         "COALESCE(SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE 0 END), 0) FROM ledger_entries",
                 BigDecimal.class);
         assertEquals(0, BigDecimal.ZERO.compareTo(diff));
+    }
+
+    @Test
+    void test20ConcurrentBidirectionalP2PTransfersDeadlockFree() throws Exception {
+        Account walletA = findByCode("1001");
+        Account walletB = findByCode("1004");
+
+        BigDecimal startA = ledgerEntryRepository.calculateBalanceByCurrency(walletA.getId(), "INR");
+        BigDecimal startB = ledgerEntryRepository.calculateBalanceByCurrency(walletB.getId(), "INR");
+        BigDecimal combinedBefore = startA.add(startB);
+
+        int threads = 20;
+        BigDecimal transferAmt = new BigDecimal("10.0000");
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<UUID>> futures = new ArrayList<>();
+
+        for (int i = 0; i < threads; i++) {
+            final boolean aToB = (i % 2 == 0);
+            futures.add(pool.submit(() -> {
+                ready.countDown();
+                start.await();
+                return aToB
+                        ? ledgerService.transferFunds(walletA.getId(), walletB.getId(), transferAmt)
+                        : ledgerService.transferFunds(walletB.getId(), walletA.getId(), transferAmt);
+            }));
+        }
+
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+
+        int succeeded = 0;
+        for (Future<UUID> f : futures) {
+            assertNotNull(f.get(30, TimeUnit.SECONDS));
+            succeeded++;
+        }
+        pool.shutdown();
+
+        BigDecimal endA = ledgerEntryRepository.calculateBalanceByCurrency(walletA.getId(), "INR");
+        BigDecimal endB = ledgerEntryRepository.calculateBalanceByCurrency(walletB.getId(), "INR");
+
+        assertEquals(20, succeeded, "All 20 concurrent P2P transfers must succeed without deadlock");
+        assertEquals(0, combinedBefore.compareTo(endA.add(endB)), "Total value across wallets must be conserved");
+        assertEquals(0, startA.compareTo(endA), "Equal bi-directional transfers must preserve walletA balance");
+        assertEquals(0, startB.compareTo(endB), "Equal bi-directional transfers must preserve walletB balance");
+        assertEquals(true, ledgerService.getTrialBalance(null, "INR").get("balanced"));
     }
 
     private Account findByCode(String code) {

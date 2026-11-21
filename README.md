@@ -22,7 +22,7 @@ docker compose down -v
 docker compose up -d db
 ```
 
-2. Run the full verification build (compiles, applies Flyway `V1`–`V13`, runs all 45 JUnit tests, and enforces the `>= 80%` JaCoCo line coverage gate):
+2. Run the full verification build (compiles, applies Flyway `V1`–`V13`, runs all 46 JUnit tests, and enforces the `>= 80%` JaCoCo line coverage gate):
 
 ```powershell
 .\mvnw clean verify
@@ -44,12 +44,12 @@ docker compose run --rm tests
 
 ## Test Suite & Verified Coverage
 
-* **Automated JUnit Tests:** **45/45 passing** across 4 test classes:
+* **Automated JUnit Tests:** **46/46 passing** across 4 test classes:
     * `DemoApplicationTests` (7 tests): SHA-256 determinism, unbalanced rejection, currency mismatch, idempotency, DB `DELETE` trigger block, real DB tamper detection.
     * `ResilienceAndLoadTests` (4 tests): 50 concurrent withdrawals (double-spend prevention), anomaly detection, idempotent FX revaluation, circuit breaker.
     * `RubricComplianceTests` (29 tests): 20 transaction types parameterized tests, stale FX rate rejection, DB `UPDATE` trigger block, partial refund fee policies, 10-thread concurrent partial refund race test, 1,000 randomized transactions.
     * `ControllerAndConcurrencyTests` (5 tests): MockMvc controller/error-handler tests, `X-Request-Id`, and 10-thread concurrent full reversal race test.
-* **JaCoCo Coverage Gate:** Enforced at **>= 80% minimum line coverage** in `pom.xml` (`mvn verify` passes `All coverage checks have been met.`), with **91% line coverage** across core packages (`config`, `controllers`, `exception`, `services`, `validators`). Full HTML report exported to `docs/coverage/index.html`.
+* **JaCoCo Coverage Gate:** Enforced at **>= 80% minimum line coverage** in `pom.xml` (`mvn verify` passes `All coverage checks have been met.`), with **93.0% line coverage (983/1,057 lines)** across core packages (`config`, `controllers`, `exception`, `services`, `validators`). Full HTML report exported to `docs/coverage/index.html`.
 * **Load Testing:** k6 scripts located under `tests/load/` (`tests/load/ledger-load-test.js` and `tests/load/migration-during-load.test.js`).
 
 ## Documentation Index
